@@ -1,6 +1,13 @@
+'use client';
+
 import Link from 'next/link';
+import { useAuth } from '@/contexts/AuthContext';
+import { useRouter } from 'next/navigation';
 
 export default function Home() {
+  const { user } = useAuth();
+  const router = useRouter();
+
   return (
     <div className="min-h-screen bg-white dark:bg-gray-900">
       <header className="border-b border-gray-200 dark:border-gray-800">
@@ -9,12 +16,63 @@ export default function Home() {
             <span className="text-2xl">🔥</span>
             <span className="text-xl font-bold text-gray-900 dark:text-white">StudyForge</span>
           </div>
-          <Link
-            href="/dashboard"
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            Get Started
-          </Link>
+          <nav className="hidden sm:flex items-center gap-8">
+            <Link
+              href="/dashboard"
+              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium'}
+              onClick={user ? undefined : () => router.push('/dashboard')}
+            >
+              Dashboard
+            </Link>
+            <Link
+              href="/leaderboard"
+              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'hidden'}
+            >
+              🏆 Leaderboard
+            </Link>
+            <Link
+              href="/friends"
+              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'hidden'}
+            >
+              👥 Friends
+            </Link>
+            <Link
+              href="/groups"
+              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'hidden'}
+            >
+              📊 Groups
+            </Link>
+          </nav>
+          <div className="flex items-center gap-2">
+            {user ? (
+              <div className="relative">
+                <img
+                  src={user.avatarUrl ?? `https://ui-avatars.com/api/?name=${encodeURIComponent(user.displayName || user.username)}&background=0D8ABC&color=fff&size=32`}
+                  alt={user.displayName || user.username}
+                  className="w-8 h-8 rounded-full object-cover border-2 border-gray-200 dark:border-gray-700"
+                />
+                <span className="text-sm font-medium text-gray-900 dark:text-white">{user.displayName || user.username}</span>
+                <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M6 9l6 6 6-6"/>
+                </svg>
+              </div>
+            ) : (
+              <>
+                <Link
+                  href="/login"
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+                >
+                  Sign In
+                </Link>
+                <Link
+                  href="/register"
+                  className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-800 transition-colors font-medium"
+                >
+                  Create Account
+                </Link>
+              </>
+            )}
+          </div>
         </div>
       </header>
 
@@ -70,46 +128,6 @@ export default function Home() {
                 </h3>
                 <p className="text-gray-600 dark:text-gray-400">
                   Never miss a deadline. Track exams, assignments, and their impact on your grades.
-                </p>
-              </div>
-
-              <div className="bg-white dark:bg-gray-900 p-6 rounded-xl border border-gray-200 dark:border-gray-700">
-                <div className="text-3xl mb-4">🎴</div>
-                <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-                  Study with Flashcards
-                </h3>
-                <p className="text-gray-600 dark:text-gray-400">
-                  Create flashcards for any subject and use spaced repetition to remember more.
-                </p>
-              </div>
-
-              <div className="bg-white dark:bg-gray-900 p-6 rounded-xl border border-gray-200 dark:border-gray-700">
-                <div className="text-3xl mb-4">📊</div>
-                <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-                  Track Progress
-                </h3>
-                <p className="text-gray-600 dark:text-gray-400">
-                  Visualise your learning journey with streaks, study time, and mastery metrics.
-                </p>
-              </div>
-
-              <div className="bg-white dark:bg-gray-900 p-6 rounded-xl border border-gray-200 dark:border-gray-700">
-                <div className="text-3xl mb-4">🎯</div>
-                <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-                  Smart Recommendations
-                </h3>
-                <p className="text-gray-600 dark:text-gray-400">
-                  Know exactly what to study next with transparent, priority-based recommendations.
-                </p>
-              </div>
-
-              <div className="bg-white dark:bg-gray-900 p-6 rounded-xl border border-gray-200 dark:border-gray-700">
-                <div className="text-3xl mb-4">🔒</div>
-                <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-                  Privacy First
-                </h3>
-                <p className="text-gray-600 dark:text-gray-400">
-                  Your study data stays on your device. Local-first architecture means your data is yours.
                 </p>
               </div>
             </div>
