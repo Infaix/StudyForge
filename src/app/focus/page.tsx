@@ -1,10 +1,12 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button, Card, CardContent, CardHeader, Input, EmptyState, PageHeader, Badge } from '@/components/ui';
-import { subjectStorage, topicStorage, studySessionStorage } from '@/lib/storage';
-import { Subject, Topic } from '@/types';
+import { useAuth } from '@/contexts/AuthContext';
+import { subjectStorage, topicStorage, studySessionStorage, userProfileStorage, xpTransactionStorage } from '@/lib/storage';
+import { Subject, Topic, UserProfile, XpTransaction } from '@/types';
 
 type TimerMode = 'pomodoro' | 'shortBreak' | 'longBreak' | 'custom';
 
@@ -39,6 +41,14 @@ function playBeep() {
 }
 
 export default function FocusPage() {
+  const { user, signOut } = useAuth();
+  const router = useRouter();
+  
+  if (!user) {
+    signOut();
+    router.push('/login');
+    return null;
+  }
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [selectedSubjectId, setSelectedSubjectId] = useState('');
@@ -52,6 +62,8 @@ export default function FocusPage() {
   const [pomodoroCount, setPomodoroCount] = useState(0);
   const [showSetup, setShowSetup] = useState(true);
   const [completedSessions, setCompletedSessions] = useState(0);
+  const [userLevel, setUserLevel] = useState(1);
+  const [userXp, setUserXp] = useState(0);
 
   const endTimeRef = useRef<number | null>(null);
   const pausedRemainingRef = useRef<number>(0);
@@ -59,6 +71,12 @@ export default function FocusPage() {
 
   useEffect(() => {
     subjectStorage.getAll().then(setSubjects);
+    userProfileStorage.get(user.id).then((profile) => {
+      if (profile) {
+        setUserXp(profile.xp);
+        setUserLevel(profile.level);
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -74,19 +92,106 @@ export default function FocusPage() {
     if (timerMode === 'pomodoro') {
       const now = new Date();
       const start = new Date(now.getTime() - totalSeconds * 1000);
+      const durationMinutes = Math.round(totalSeconds / 60);
+      
+      // Award XP for study session (10 XP per minute, minimum 10 XP)
+      const xpAward = Math.max(10, durationMinutes * 10);
+      
+      // Create study session
       await studySessionStorage.create({
         id: crypto.randomUUID(),
         subjectId: selectedSubjectId,
         topicId: selectedTopicId || null,
-        duration: Math.round(totalSeconds / 60),
+        duration: durationMinutes,
         startTime: start.toISOString(),
         endTime: now.toISOString(),
         notes: null,
       });
+      
+      // Create XP transaction
+      await xpTransactionStorage.create({
+        id: crypto.randomUUID(),
+        userId: user.id,
+        amount: xpAward,
+        reason: 'study_session',
+        relatedId: null,
+        createdAt: now.toISOString(),
+      });
+      
+      // Update user profile with new XP and study time
+      await userProfileStorage.get(user.id).then(async (profile) => {
+        if (profile) {
+          const newXp = profile.xp + xpAward;
+          const newStudyTime = (profile.studyTimeToday || 0) + totalSeconds;
+          const newStudyTimeWeek = (profile.studyTimeThisWeek || 0) + totalSeconds;
+          const newStudyTimeMonth = (profile.studyTimeThisMonth || 0) + totalSeconds;
+          const newStudyTimeAllTime = (profile.studyTimeAllTime || 0) + totalSeconds;
+          const newLevel = calculateLevel(newXp);
+          
+          // Check and award achievements
+          const alreadyUnlocked = profile.achievements || [];
+          const newlyUnlocked: string[] = [];
+          
+          // Check first session achievement
+          if (!alreadyUnlocked.includes(AchievementCatalog.first_session.id)) {
+            const sessionCount = alreadyUnlocked.filter((a: string) => a !== AchievementCatalog.first_session.id).length;
+            if (sessionCount === 0) {
+              await userAchievementStorage.create({
+                id: crypto.randomUUID(),
+                userId: user.id,
+                achievementId: AchievementCatalog.first_session.id,
+                unlockedAt: new Date().toISOString(),
+              });
+              newlyUnlocked.push(AchievementCatalog.first_session.id);
+            }
+          }
+          
+          // Check 5 sessions achievement
+          const sessionCount = alreadyUnlocked.filter((a: string) => a !== AchievementCatalog.five_sessions.id).length;
+          if (sessionCount >= 5 && !alreadyUnlocked.includes(AchievementCatalog.five_sessions.id)) {
+            await userAchievementStorage.create({
+              id: crypto.randomUUID(),
+              userId: user.id,
+              achievementId: AchievementCatalog.five_sessions.id,
+              unlockedAt: new Date().toISOString(),
+            });
+            newlyUnlocked.push(AchievementCatalog.five_sessions.id);
+          }
+          
+          // Check 100 XP achievement
+          if (newXp >= 100 && !alreadyUnlocked.includes(AchievementCatalog.hundred_xp.id)) {
+            await userAchievementStorage.create({
+              id: crypto.randomUUID(),
+              userId: user.id,
+              achievementId: AchievementCatalog.hundred_xp.id,
+              unlockedAt: new Date().toISOString(),
+            });
+            newlyUnlocked.push(AchievementCatalog.hundred_xp.id);
+          }
+          
+          const updatedProfile: UserProfile = {
+            ...profile,
+            xp: newXp,
+            level: newLevel,
+            studyTimeToday: newStudyTime,
+            studyTimeThisWeek: newStudyTimeWeek,
+            studyTimeThisMonth: newStudyTimeMonth,
+            studyTimeAllTime: newStudyTimeAllTime,
+            achievements: [...profile.achievements, ...newlyUnlocked],
+            updatedAt: new Date().toISOString(),
+          };
+          
+          await userProfileStorage.update(updatedProfile);
+          
+          // Update local state
+          setUserXp(newXp);
+          setUserLevel(newLevel);
+        }
+      });
+      
       setCompletedSessions((p) => p + 1);
-      setPomodoroCount((p) => p + 1);
     }
-  }, [timerMode, totalSeconds, selectedSubjectId, selectedTopicId]);
+  }, [timerMode, totalSeconds, selectedSubjectId, selectedTopicId, user, studySessionStorage, xpTransactionStorage, userProfileStorage]);
 
   const tick = useCallback(() => {
     if (!endTimeRef.current) return;
@@ -180,6 +285,61 @@ export default function FocusPage() {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  // Level calculation: level up every 100 XP, starting at level 1
+  // Level 1: 0-99 XP, Level 2: 100-199 XP, Level 3: 200-299 XP, etc.
+  function calculateLevel(xp: number): number {
+    return Math.max(1, Math.floor(xp / 100) + 1);
+  }
+
+// Achievement catalog
+  const AchievementCatalog = {
+    first_session: {
+      id: 'first_session',
+      title: 'First Steps',
+      description: 'Complete your first study session',
+      icon: '🎯',
+      category: 'getting-started',
+      requirement: 'complete_1_session',
+      rewardXp: 50,
+    },
+    five_sessions: {
+      id: 'five_sessions',
+      title: 'Getting Started',
+      description: 'Complete 5 study sessions',
+      icon: '📚',
+      category: 'getting-started',
+      requirement: 'complete_5_sessions',
+      rewardXp: 150,
+    },
+    hundred_xp: {
+      id: 'hundred_xp',
+      title: 'XP Beginner',
+      description: 'Earn 100 XP',
+      icon: '⭐',
+      category: 'progress',
+      requirement: 'earn_100_xp',
+      rewardXp: 100,
+    },
+    first_week: {
+      id: 'first_week',
+      title: 'Week Warrior',
+      description: 'Study for 7 days in a row',
+      icon: '🔥',
+      category: 'streak',
+      requirement: 'streak_7_days',
+      rewardXp: 200,
+    },
+    level_5: {
+      id: 'level_5',
+      title: 'Rising Star',
+      description: 'Reach level 5',
+      icon: '✨',
+      category: 'level',
+      requirement: 'level_5',
+      rewardXp: 300,
+    },
+  } as const;
+
   const progressPercent = totalSeconds > 0 ? ((totalSeconds - remainingSeconds) / totalSeconds) * 100 : 0;
 
   const selectedSubject = subjects.find((s) => s.id === selectedSubjectId);
@@ -232,6 +392,14 @@ export default function FocusPage() {
           ) : undefined
         }
       />
+      <div className="flex items-center gap-4">
+<Badge>
+              Lvl {userLevel}
+            </Badge>
+        <span className="text-sm text-gray-500 dark:text-gray-400">
+          {userXp} XP
+        </span>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">

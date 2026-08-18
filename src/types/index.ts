@@ -108,3 +108,132 @@ export interface UserSettings {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface UserProfile {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+  xp: number;
+  level: number;
+  streak: number;
+  studyTimeToday: number;
+  studyTimeThisWeek: number;
+  studyTimeThisMonth: number;
+  studyTimeAllTime: number;
+  friends: string[];
+  friendRequestsReceived: string[];
+  friendRequestsSent: string[];
+  groups: string[];
+  achievements: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+  xp: number;
+  level: number;
+  streak: number;
+  studyTimeToday: number;
+  studyTimeThisWeek: number;
+  studyTimeThisMonth: number;
+  studyTimeAllTime: number;
+  friends: string[];
+  friendRequestsReceived: string[];
+  friendRequestsSent: string[];
+  groups: string[];
+  achievements: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FriendRequest {
+  id: string;
+  fromUserId: string;
+  toUserId: string;
+  message: string | null;
+  createdAt: string;
+  status: 'pending' | 'accepted' | 'declined' | 'cancelled';
+}
+
+export interface Group {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  subjectId: string | null;
+  administratorId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GroupMember {
+  id: string;
+  groupId: string;
+  userId: string;
+  role: 'administrator' | 'member';
+  joinedAt: string;
+}
+
+export interface GroupInvite {
+  id: string;
+  groupId: string;
+  invitedByUserId: string;
+  toUserId: string;
+  status: 'pending' | 'accepted' | 'declined';
+  createdAt: string;
+}
+
+export interface StudyActivity {
+  id: string;
+  userId: string;
+  type: 'study_session' | 'stopwatch_session' | 'quiz' | 'flashcard' | 'achievement' | 'level_up' | 'streak_milestone';
+  title: string;
+  description: string | null;
+  durationMinutes: number | null;
+  xpAwarded: number;
+  subjectId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface XpTransaction {
+  id: string;
+  userId: string;
+  amount: number;
+  reason: string;
+  relatedId: string | null; // e.g., session ID, quiz ID
+  createdAt: string;
+}
+
+export interface Achievement {
+  id: string;
+  title: string;
+  description: string;
+  icon: string;
+  category: string;
+  requirement: string;
+  rewardXp: number;
+}
+
+export interface UserAchievement {
+  id: string;
+  userId: string;
+  achievementId: string;
+  unlockedAt: string;
+}
+
+export interface Notification {
+  id: string;
+  userId: string;
+  type: 'friend_request' | 'friend_request_accepted' | 'group_invitation' | 'achievement_unlocked' | 'level_up' | 'leaderboard_change' | 'streak_milestone';
+  title: string;
+  message: string;
+  read: boolean;
+  relatedId: string | null;
+  createdAt: string;
+}

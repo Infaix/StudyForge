@@ -1,4 +1,4 @@
-import { Subject, Topic, Assessment, StudySession, StudyTask, Flashcard, FlashcardDeck, Quiz, QuizQuestion, QuizResult, UserSettings } from '@/types';
+import { Subject, Topic, Assessment, StudySession, StudyTask, Flashcard, FlashcardDeck, Quiz, QuizQuestion, QuizResult, UserSettings, UserProfile, AuthUser, FriendRequest, Group, GroupMember, GroupInvite, StudyActivity, XpTransaction, Achievement, UserAchievement, Notification } from '@/types';
 
 const DB_NAME = 'StudyForgeDB';
 const DB_VERSION = 1;
@@ -21,6 +21,16 @@ const STORES: StoreConfig[] = [
   { name: 'quizQuestions', keyPath: 'id', indexes: [{ name: 'quizId', keyPath: 'quizId' }] },
   { name: 'quizResults', keyPath: 'id', indexes: [{ name: 'quizId', keyPath: 'quizId' }] },
   { name: 'userSettings', keyPath: 'id' },
+  { name: 'userProfiles', keyPath: 'id', indexes: [{ name: 'username', keyPath: 'username' }] },
+  { name: 'friendRequests', keyPath: 'id', indexes: [{ name: 'fromUserId', keyPath: 'fromUserId' }, { name: 'toUserId', keyPath: 'toUserId' }] },
+  { name: 'groups', keyPath: 'id', indexes: [{ name: 'administratorId', keyPath: 'administratorId' }] },
+  { name: 'groupMembers', keyPath: 'id', indexes: [{ name: 'groupId', keyPath: 'groupId' }, { name: 'userId', keyPath: 'userId' }] },
+  { name: 'groupInvites', keyPath: 'id', indexes: [{ name: 'groupId', keyPath: 'groupId' }, { name: 'toUserId', keyPath: 'toUserId' }] },
+  { name: 'studyActivities', keyPath: 'id' },
+  { name: 'xpTransactions', keyPath: 'id' },
+  { name: 'achievements', keyPath: 'id' },
+  { name: 'userAchievements', keyPath: 'id', indexes: [{ name: 'userId', keyPath: 'userId' }, { name: 'achievementId', keyPath: 'achievementId' }] },
+  { name: 'notifications', keyPath: 'id', indexes: [{ name: 'userId', keyPath: 'userId' }] },
 ];
 
 let db: IDBDatabase | null = null;
@@ -221,4 +231,86 @@ export const userSettingsStorage = {
   get: (id: string = 'default') => get<UserSettings>('userSettings', id),
   create: (settings: UserSettings) => add('userSettings', settings),
   update: (settings: UserSettings) => put('userSettings', settings),
+};
+
+export const userProfileStorage = {
+  get: (id: string = 'default') => get<UserProfile>('userProfiles', id),
+  getByUsername: (username: string) => {
+    return getByIndex<UserProfile>('userProfiles', 'username', username).then((results) => results[0] ?? null);
+  },
+  create: (profile: UserProfile) => add('userProfiles', profile),
+  update: (profile: UserProfile) => put('userProfiles', profile),
+  delete: (id: string) => remove('userProfiles', id),
+};
+
+export const friendRequestStorage = {
+  getAllByUser: (userId: string) => getByIndex<FriendRequest>('friendRequests', 'toUserId', userId),
+  getAllSentByUser: (userId: string) => getByIndex<FriendRequest>('friendRequests', 'fromUserId', userId),
+  get: (id: string) => get<FriendRequest>('friendRequests', id),
+  create: (request: FriendRequest) => add('friendRequests', request),
+  update: (request: FriendRequest) => put('friendRequests', request),
+  delete: (id: string) => remove('friendRequests', id),
+};
+
+export const groupStorage = {
+  getAllByAdministrator: (adminId: string) => getByIndex<Group>('groups', 'administratorId', adminId),
+  get: (id: string) => get<Group>('groups', id),
+  create: (group: Group) => add('groups', group),
+  update: (group: Group) => put('groups', group),
+  delete: (id: string) => remove('groups', id),
+};
+
+export const groupMemberStorage = {
+  getAllByGroup: (groupId: string) => getByIndex<GroupMember>('groupMembers', 'groupId', groupId),
+  getAllByUser: (userId: string) => getByIndex<GroupMember>('groupMembers', 'userId', userId),
+  get: (id: string) => get<GroupMember>('groupMembers', id),
+  create: (member: GroupMember) => add('groupMembers', member),
+  update: (member: GroupMember) => put('groupMembers', member),
+  delete: (id: string) => remove('groupMembers', id),
+};
+
+export const groupInviteStorage = {
+  getAllByGroup: (groupId: string) => getByIndex<GroupInvite>('groupInvites', 'groupId', groupId),
+  getAllPendingByUser: (userId: string) => getByIndex<GroupInvite>('groupInvites', 'toUserId', userId),
+  get: (id: string) => get<GroupInvite>('groupInvites', id),
+  create: (invite: GroupInvite) => add('groupInvites', invite),
+  update: (invite: GroupInvite) => put('groupInvites', invite),
+  delete: (id: string) => remove('groupInvites', id),
+};
+
+export const studyActivityStorage = {
+  create: (activity: StudyActivity) => add('studyActivities', activity),
+  getAllByUser: (userId: string) => getByIndex<StudyActivity>('studyActivities', 'userId', userId),
+  get: (id: string) => get<StudyActivity>('studyActivities', id),
+};
+
+export const xpTransactionStorage = {
+  create: (transaction: XpTransaction) => add('xpTransactions', transaction),
+  getAllByUser: (userId: string) => getByIndex<XpTransaction>('xpTransactions', 'userId', userId),
+  get: (id: string) => get<XpTransaction>('xpTransactions', id),
+};
+
+export const achievementStorage = {
+  getAll: () => getAll<Achievement>('achievements'),
+  get: (id: string) => get<Achievement>('achievements', id),
+};
+
+export const userAchievementStorage = {
+  getAllByUser: (userId: string) => getByIndex<UserAchievement>('userAchievements', 'userId', userId),
+  get: (id: string) => get<UserAchievement>('userAchievements', id),
+  create: (ua: UserAchievement) => add('userAchievements', ua),
+};
+
+export const notificationStorage = {
+  create: (notification: Notification) => add('notifications', notification),
+  getAllByUser: (userId: string) => getByIndex<Notification>('notifications', 'userId', userId),
+  get: (id: string) => get<Notification>('notifications', id),
+  markRead: async (id: string) => {
+    const notification = await get<Notification>('notifications', id);
+    return put('notifications', { ...notification, read: true });
+  },
+  markAllRead: async (userId: string) => {
+    const notifications = await getByIndex<Notification>('notifications', 'userId', userId);
+    notifications.forEach((n) => put('notifications', { ...n, read: true }));
+  },
 };
