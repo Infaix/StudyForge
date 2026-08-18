@@ -1,10 +1,30 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/navigation';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, Button, Input, EmptyState } from '@/components/ui';
+
+interface Note {
+  id: string;
+  title: string;
+  content: string;
+  subject: string;
+  createdAt: string;
+  updatedAt: string;
+  userId: string;
+}
+
+const SUBJECTS = [
+  'Maths Methods',
+  'Physics',
+  'English Language',
+  'Software Development',
+  'French',
+  'Vietnamese',
+  'General',
+];
 
 export default function NotesPage() {
   const { user } = useAuth();
@@ -15,57 +35,96 @@ export default function NotesPage() {
     return null;
   }
 
-  const [notes, setNotes] = useState<any[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
-  const [editingNote, setEditingNote] = useState<any | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [subject, setSubject] = useState('General');
+  const [editingNote, setEditingNote] = useState<Note | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<'updatedAt' | 'createdAt' | 'title'>('updatedAt');
 
   useEffect(() => {
-    // Load user's notes from profile
-    const userId = user.id;
-    // In a real app, would load from storage
-    // For now, use empty state
-    setNotes([]);
+    const saved = localStorage.getItem(`notes-${user.id}`);
+    if (saved) {
+      try {
+        setNotes(JSON.parse(saved));
+      } catch {
+        setNotes([]);
+      }
+    }
   }, [user]);
 
-  const handleCreateNote = async () => {
+  useEffect(() => {
+    if (user) {
+      localStorage.setItem(`notes-${user.id}`, JSON.stringify(notes));
+    }
+  }, [notes, user]);
+
+  const handleCreateNote = () => {
     if (!title.trim() || !content.trim()) return;
-    setError(null);
-    
-    const newNote = {
+    const now = new Date().toISOString();
+    const newNote: Note = {
       id: 'note-' + Date.now(),
       title: title.trim(),
       content: content.trim(),
-      createdAt: new Date().toISOString(),
+      subject,
+      createdAt: now,
+      updatedAt: now,
       userId: user.id,
     };
-    
     setNotes((prev) => [newNote, ...prev]);
     setTitle('');
     setContent('');
+    setSubject('General');
   };
 
-  const handleEditNote = async (note: any) => {
+  const handleEditNote = (note: Note) => {
     setEditingNote(note);
     setTitle(note.title);
     setContent(note.content);
+    setSubject(note.subject);
   };
 
-  const handleSaveEdit = async () => {
-    if (!title.trim() || !content.trim()) return;
-    setError(null);
-    
+  const handleSaveEdit = () => {
+    if (!editingNote || !title.trim() || !content.trim()) return;
     setNotes((prev) =>
-      prev.map((note) => note.id === editingNote?.id ? { ...editingNote, title: title.trim(), content: content.trim() } : note)
+      prev.map((n) =>
+        n.id === editingNote.id
+          ? { ...n, title: title.trim(), content: content.trim(), subject, updatedAt: new Date().toISOString() }
+          : n
+      )
     );
     setEditingNote(null);
     setTitle('');
     setContent('');
+    setSubject('General');
   };
 
-  const handleDeleteNote = async (noteId: string) => {
-    setNotes((prev) => prev.filter((note) => note.id !== noteId));
+  const handleCancelEdit = () => {
+    setEditingNote(null);
+    setTitle('');
+    setContent('');
+    setSubject('General');
+  };
+
+  const handleDeleteNote = (noteId: string) => {
+    setNotes((prev) => prev.filter((n) => n.id !== noteId));
+  };
+
+  const filteredNotes = notes
+    .filter((n) => {
+      if (!searchQuery) return true;
+      const q = searchQuery.toLowerCase();
+      return n.title.toLowerCase().includes(q) || n.content.toLowerCase().includes(q) || n.subject.toLowerCase().includes(q);
+    })
+    .sort((a, b) => {
+      if (sortBy === 'title') return a.title.localeCompare(b.title);
+      return new Date(b[sortBy]).getTime() - new Date(a[sortBy]).getTime();
+    });
+
+  const formatDate = (iso: string) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
   return (
@@ -75,83 +134,141 @@ export default function NotesPage() {
           Notes
         </h1>
 
+        {/* Search and Sort */}
+        <div className="flex flex-col sm:flex-row gap-3 mb-6">
+          <Input
+            placeholder="Search notes..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="flex-1"
+          />
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as 'updatedAt' | 'createdAt' | 'title')}
+            className="px-3 py-2 border border-gray-300 rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white text-sm"
+          >
+            <option value="updatedAt">Last Modified</option>
+            <option value="createdAt">Date Created</option>
+            <option value="title">Title</option>
+          </select>
+        </div>
+
         {/* Notes List */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-          {notes.length === 0 ? (
-            <EmptyState
-              icon={<span className="text-3xl">📝</span>}
-              title="No notes yet"
-              description="Create your first note to get started."
-              action={{
-                label: 'New Note',
-                onClick: () => {},
-              }}
-            />
-          ) : (
-            <div className="space-y-3">
-              {notes.map((note) => (
-                <Card key={note.id} className="hover:shadow-md transition-shadow">
-                  <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-medium text-gray-900 dark:text-white truncate">
-                        {note.title}
-                      </h3>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleEditNote(note)}
-                      >
-                        Edit
-                      </Button>
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        onClick={() => handleDeleteNote(note.id)}
-                      >
-                        Delete
-                      </Button>
+        {filteredNotes.length === 0 ? (
+          <EmptyState
+            icon={<span className="text-3xl">📝</span>}
+            title={searchQuery ? 'No matching notes' : 'No notes yet'}
+            description={searchQuery ? 'Try a different search term.' : 'Create your first note below.'}
+          />
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
+            {filteredNotes.map((note) => (
+              <Card
+                key={note.id}
+                className="hover:shadow-md transition-shadow cursor-pointer"
+                onClick={() => handleEditNote(note)}
+              >
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-medium text-gray-900 dark:text-white truncate">
+                      {note.title}
+                    </h3>
+                    <div className="flex items-center gap-1">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">
+                        {note.subject}
+                      </span>
                     </div>
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm text-gray-500 dark:text-gray-400 line-clamp-2">
-                    {note.content.substring(0, 100)}${note.content.length > 100 ? '...' : ''}
+                  <p className="text-sm text-gray-500 dark:text-gray-400 line-clamp-3 mb-2">
+                    {note.content.length > 150 ? note.content.substring(0, 150) + '...' : note.content}
                   </p>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-400 dark:text-gray-500">
+                      {formatDate(note.updatedAt)}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteNote(note.id);
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
             ))}
           </div>
-        </div>
+        )}
 
-        {/* New Note Form */}
+        {/* Note Editor */}
         <Card>
           <CardHeader>
             <h3 className="font-medium text-gray-900 dark:text-white mb-2">
-              New Note
+              {editingNote ? 'Edit Note' : 'New Note'}
             </h3>
           </CardHeader>
           <CardContent>
-            <Input
-              label="Title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Note title..."
-            />
-            <Input
-              label="Content"
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Write your note here..."
-              rows={4}
-              className="h-[200px] resize-none"
-            />
-            <div className="flex gap-3 pt-4">
-              <Button onClick={handleCreateNote} className="flex-1">
-                Save Note
-              </Button>
-              <Button variant="secondary" onClick={() => { setTitle(''); setContent(''); }}>
-                Cancel
-              </Button>
+            <div className="space-y-4">
+              <Input
+                label="Title"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Note title..."
+              />
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Subject
+                </label>
+                <select
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white text-sm"
+                >
+                  {SUBJECTS.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Content
+                </label>
+                <textarea
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  placeholder="Write your note here..."
+                  rows={8}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white text-sm resize-y min-h-[200px]"
+                />
+              </div>
+              <div className="flex gap-3 pt-2">
+                {editingNote ? (
+                  <>
+                    <Button onClick={handleSaveEdit} className="flex-1">
+                      Save Changes
+                    </Button>
+                    <Button variant="secondary" onClick={handleCancelEdit}>
+                      Cancel
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button onClick={handleCreateNote} className="flex-1">
+                      Save Note
+                    </Button>
+                    <Button variant="secondary" onClick={() => { setTitle(''); setContent(''); setSubject('General'); }}>
+                      Clear
+                    </Button>
+                  </>
+                )}
+              </div>
             </div>
           </CardContent>
         </Card>

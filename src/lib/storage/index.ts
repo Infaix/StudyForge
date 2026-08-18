@@ -234,6 +234,7 @@ export const userSettingsStorage = {
 };
 
 export const userProfileStorage = {
+  getAll: () => getAll<UserProfile>('userProfiles'),
   get: (id: string = 'default') => get<UserProfile>('userProfiles', id),
   getByUsername: (username: string) => {
     return getByIndex<UserProfile>('userProfiles', 'username', username).then((results) => results[0] ?? null);
@@ -285,6 +286,7 @@ export const studyActivityStorage = {
 };
 
 export const xpTransactionStorage = {
+  getAll: () => getAll<XpTransaction>('xpTransactions'),
   create: (transaction: XpTransaction) => add('xpTransactions', transaction),
   getAllByUser: (userId: string) => getByIndex<XpTransaction>('xpTransactions', 'userId', userId),
   get: (id: string) => get<XpTransaction>('xpTransactions', id),

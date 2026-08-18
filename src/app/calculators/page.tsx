@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { PageHeader, Card, CardContent, CardHeader, Button, Input, Badge } from '@/components/ui';
 
@@ -546,6 +547,7 @@ const CALCULATOR_MAP: Record<CalculatorTab, React.FC> = {
 
 export default function CalculatorsPage() {
   const [activeTab, setActiveTab] = useState<CalculatorTab>('percentage');
+  const router = useRouter();
 
   const ActiveCalculator = CALCULATOR_MAP[activeTab];
 
@@ -589,6 +591,23 @@ export default function CalculatorsPage() {
               <ActiveCalculator />
             </CardContent>
           </Card>
+
+          <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Card className="hover:shadow-md transition-shadow cursor-pointer" onClick={() => router.push('/calculators/scientific')}>
+              <CardContent className="p-6">
+                <div className="text-3xl mb-2">🔬</div>
+                <h3 className="font-semibold text-gray-900 dark:text-white mb-1">Scientific Calculator</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Trigonometry, logarithms, and scientific functions</p>
+              </CardContent>
+            </Card>
+            <Card className="hover:shadow-md transition-shadow cursor-pointer" onClick={() => router.push('/calculators/unit-converter')}>
+              <CardContent className="p-6">
+                <div className="text-3xl mb-2">🔄</div>
+                <h3 className="font-semibold text-gray-900 dark:text-white mb-1">Unit Converter</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Convert between units of measurement</p>
+              </CardContent>
+            </Card>
+          </div>
         </div>
       </div>
     </DashboardLayout>
