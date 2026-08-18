@@ -50,15 +50,15 @@ export default function FriendsPage() {
     setNewRequestMessage(`Friend request sent to ${username}`);
   };
 
-  const acceptFriendRequest = async (requestId: string) => {
-    await friendRequestStorage.update(requestId, { status: 'accepted' });
-    setFriendRequests((prev) => prev.filter((r: any) => r.id !== requestId));
-    setFriends((prev) => [...prev, requestId]);
+  const acceptFriendRequest = async (request: any) => {
+    await friendRequestStorage.update(request);
+    setFriendRequests((prev) => prev.filter((r: any) => r.id !== request.id));
+    setFriends((prev) => [...prev, request.fromUserId]);
   };
 
-  const declineFriendRequest = async (requestId: string) => {
-    await friendRequestStorage.update(requestId, { status: 'declined' });
-    setFriendRequests((prev) => prev.filter((r: any) => r.id !== requestId));
+  const declineFriendRequest = async (request: any) => {
+    await friendRequestStorage.update(request);
+    setFriendRequests((prev) => prev.filter((r: any) => r.id !== request.id));
   };
 
   return (
@@ -142,14 +142,14 @@ export default function FriendsPage() {
                       <Button
                         variant="secondary"
                         size="sm"
-                        onClick={() => acceptFriendRequest(request.id)}
+                        onClick={() => acceptFriendRequest(request)}
                       >
                         Accept
                       </Button>
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => declineFriendRequest(request.id)}
+                        onClick={() => declineFriendRequest(request)}
                       >
                         Decline
                       </Button>
