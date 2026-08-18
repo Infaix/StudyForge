@@ -18,29 +18,65 @@ export default function Home() {
           </div>
           <nav className="hidden sm:flex items-center gap-8">
             <Link
-              href="/dashboard"
+              href="/study"
               className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium'}
-              onClick={user ? undefined : () => router.push('/dashboard')}
+              onClick={user ? undefined : () => router.push('/study')}
             >
-              Dashboard
+              Study
+            </Link>
+            <Link
+              href="/study/timer"
+              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium'}
+            >
+              Timer
+            </Link>
+            <Link
+              href="/study/stopwatch"
+              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium'}
+            >
+              Stopwatch
+            </Link>
+            <Link
+              href="/study/flashcards"
+              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium'}
+            >
+              Flashcards
+            </Link>
+            <Link
+              href="/study/quiz"
+              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium'}
+            >
+              Quiz
+            </Link>
+            <Link
+              href="/study/notes"
+              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium'}
+            >
+              Notes
             </Link>
             <Link
               href="/leaderboard"
-              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'hidden'}
+              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium'}
             >
-              🏆 Leaderboard
+              Leaderboard
             </Link>
             <Link
               href="/friends"
-              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'hidden'}
+              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium'}
             >
-              👥 Friends
+              Friends
             </Link>
             <Link
               href="/groups"
-              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'hidden'}
+              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium'}
             >
-              📊 Groups
+              Groups
+            </Link>
+            <Link
+              href="/account"
+              className={user ? 'text-gray-700 dark:text-gray-300 hover:text-blue-600' : 'px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium'}
+            >
+              Account
             </Link>
           </nav>
           <div className="flex items-center gap-2">
@@ -90,7 +126,7 @@ export default function Home() {
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <Link
-                href="/dashboard"
+                href="/study"
                 className="px-8 py-4 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-lg font-medium"
               >
                 Start Studying Free
@@ -143,7 +179,7 @@ export default function Home() {
               Join thousands of students who are already mastering their subjects with StudyForge.
             </p>
             <Link
-              href="/dashboard"
+              href="/study"
               className="px-8 py-4 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-lg font-medium"
             >
               Get Started Free
