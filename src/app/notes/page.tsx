@@ -44,23 +44,19 @@ export default function NotesPage() {
   const [sortBy, setSortBy] = useState<'updatedAt' | 'createdAt' | 'title'>('updatedAt');
 
   useEffect(() => {
-    const saved = localStorage.getItem(`notes-${user.id}`);
-    if (saved) {
+    const loadNotes = async () => {
       try {
-        setNotes(JSON.parse(saved));
-      } catch {
-        setNotes([]);
-      }
-    }
-  }, [user]);
+        const res = await fetch('/api/data/notes', { credentials: 'include' });
+        if (res.ok) {
+          const data = await res.json();
+          setNotes(data);
+        }
+      } catch {}
+    };
+    loadNotes();
+  }, []);
 
-  useEffect(() => {
-    if (user) {
-      localStorage.setItem(`notes-${user.id}`, JSON.stringify(notes));
-    }
-  }, [notes, user]);
-
-  const handleCreateNote = () => {
+  const handleCreateNote = async () => {
     if (!title.trim() || !content.trim()) return;
     const now = new Date().toISOString();
     const newNote: Note = {
@@ -72,7 +68,15 @@ export default function NotesPage() {
       updatedAt: now,
       userId: user.id,
     };
-    setNotes((prev) => [newNote, ...prev]);
+    try {
+      await fetch('/api/data/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(newNote),
+      });
+      setNotes((prev) => [newNote, ...prev]);
+    } catch {}
     setTitle('');
     setContent('');
     setSubject('General');
@@ -85,15 +89,18 @@ export default function NotesPage() {
     setSubject(note.subject);
   };
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editingNote || !title.trim() || !content.trim()) return;
-    setNotes((prev) =>
-      prev.map((n) =>
-        n.id === editingNote.id
-          ? { ...n, title: title.trim(), content: content.trim(), subject, updatedAt: new Date().toISOString() }
-          : n
-      )
-    );
+    const updated = { ...editingNote, title: title.trim(), content: content.trim(), subject, updatedAt: new Date().toISOString() };
+    try {
+      await fetch(`/api/data/notes/${editingNote.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(updated),
+      });
+      setNotes((prev) => prev.map((n) => n.id === editingNote.id ? updated : n));
+    } catch {}
     setEditingNote(null);
     setTitle('');
     setContent('');
@@ -107,8 +114,11 @@ export default function NotesPage() {
     setSubject('General');
   };
 
-  const handleDeleteNote = (noteId: string) => {
-    setNotes((prev) => prev.filter((n) => n.id !== noteId));
+  const handleDeleteNote = async (noteId: string) => {
+    try {
+      await fetch(`/api/data/notes/${noteId}`, { method: 'DELETE', credentials: 'include' });
+      setNotes((prev) => prev.filter((n) => n.id !== noteId));
+    } catch {}
   };
 
   const filteredNotes = notes

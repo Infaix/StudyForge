@@ -2,23 +2,24 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, Button, Input } from '@/components/ui';
-import { userProfileStorage } from '@/lib/storage';
-import type { UserProfile } from '@/types';
-import { DEFAULT_PRIVACY_SETTINGS } from '@/types';
+import { useAuth } from '@/contexts/AuthContext';
 
 export default function LoginPage() {
-  const [email, setEmail] = useState('');
+  const [login, setLogin] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const { signIn } = useAuth();
+  const router = useRouter();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    if (!email.trim()) {
-      setError('Email is required');
+    if (!login.trim()) {
+      setError('Email or username is required');
       return;
     }
     if (!password.trim()) {
@@ -28,44 +29,13 @@ export default function LoginPage() {
 
     setLoading(true);
     try {
-      const existingProfile = await userProfileStorage.get('current-user');
-
-      if (existingProfile && existingProfile.id) {
-        window.location.href = '/dashboard';
-        return;
+      const result = await signIn(login.trim(), password);
+      if (result.error) {
+        setError(result.error);
+      } else {
+        router.push('/dashboard');
       }
-
-      const now = new Date().toISOString();
-      const userId = `user-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
-      const username = email.trim().split('@')[0];
-      const profile: UserProfile = {
-        id: userId,
-        username,
-        displayName: username,
-        avatarUrl: null,
-        bio: '',
-        xp: 0,
-        level: 1,
-        streak: 0,
-        studyTimeToday: 0,
-        studyTimeThisWeek: 0,
-        studyTimeThisMonth: 0,
-        studyTimeAllTime: 0,
-        friends: [],
-        friendRequestsReceived: [],
-        friendRequestsSent: [],
-        groups: [],
-        achievements: [],
-        privacy: { ...DEFAULT_PRIVACY_SETTINGS },
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      await userProfileStorage.create(profile);
-      await userProfileStorage.update({ ...profile, id: 'current-user' });
-      window.location.href = '/dashboard';
-    } catch (err) {
-      console.error('Login failed:', err);
+    } catch {
       setError('Login failed. Please try again.');
     } finally {
       setLoading(false);
@@ -95,12 +65,11 @@ export default function LoginPage() {
               )}
 
               <Input
-                label="Email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                autoComplete="email"
+                label="Email or Username"
+                value={login}
+                onChange={(e) => setLogin(e.target.value)}
+                placeholder="you@example.com or username"
+                autoComplete="username"
               />
 
               <Input

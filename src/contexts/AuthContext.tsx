@@ -1,15 +1,17 @@
 'use client';
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
-
-import { AuthUser, DEFAULT_PRIVACY_SETTINGS } from '@/types';
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { AuthUser } from '@/types';
 
 interface AuthContextType {
   user: AuthUser | null;
   isLoading: boolean;
   hasSession: boolean;
-  signInWithGoogle: () => Promise<void>;
+  refreshUser: () => Promise<void>;
+  signIn: (login: string, password: string) => Promise<{ error?: string }>;
+  signUp: (email: string, username: string, password: string, displayName?: string) => Promise<{ error?: string }>;
   signOut: () => Promise<void>;
+  updateUser: (updates: Partial<AuthUser>) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -19,83 +21,95 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [hasSession, setHasSession] = useState(false);
 
-  useEffect(() => {
-    let mounted = true;
-
-    const loadSession = async () => {
-      try {
-        // Check if we have a stored session in IndexedDB
-        const profile = await (await import('@/lib/storage')).userProfileStorage.get('current-user');
-        if (profile && profile.id) {
-          setUser({
-            id: profile.id,
-            username: profile.username,
-            displayName: profile.displayName,
-            avatarUrl: profile.avatarUrl,
-            bio: profile.bio ?? '',
-            xp: profile.xp ?? 0,
-            level: profile.level ?? 1,
-            streak: profile.streak ?? 0,
-            studyTimeToday: profile.studyTimeToday ?? 0,
-            studyTimeThisWeek: profile.studyTimeThisWeek ?? 0,
-            studyTimeThisMonth: profile.studyTimeThisMonth ?? 0,
-            studyTimeAllTime: profile.studyTimeAllTime ?? 0,
-            friends: profile.friends ?? [],
-            friendRequestsReceived: profile.friendRequestsReceived ?? [],
-            friendRequestsSent: profile.friendRequestsSent ?? [],
-            groups: profile.groups ?? [],
-            achievements: profile.achievements ?? [],
-            privacy: profile.privacy ?? DEFAULT_PRIVACY_SETTINGS,
-            createdAt: profile.createdAt,
-            updatedAt: profile.updatedAt,
-          });
+  const refreshUser = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auth/me', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.user) {
+          setUser(data.user);
           setHasSession(true);
+          return;
         }
-      } catch (error) {
-        console.error('Failed to load auth session:', error);
-      } finally {
-        if (mounted) setIsLoading(false);
       }
-    };
-
-    loadSession();
-
-    return () => { mounted = false };
-  }, []);
-
-  const signInWithGoogle = async () => {
-    setIsLoading(true);
-    try {
-      // Redirect to Google OAuth page
-      window.location.href = '/api/auth/google/callback';
-    } catch (error) {
-      console.error('Google sign in failed:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const signOut = async () => {
-    setIsLoading(true);
-    try {
-      // Clear the current user from IndexedDB
-      await (await import('@/lib/storage')).userProfileStorage.delete('current-user');
       setUser(null);
       setHasSession(false);
-      window.location.href = '/';
-    } catch (error) {
-      console.error('Sign out failed:', error);
+    } catch {
+      setUser(null);
+      setHasSession(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    refreshUser().finally(() => {
+      if (mounted) setIsLoading(false);
+    });
+    return () => { mounted = false };
+  }, [refreshUser]);
+
+  const signIn = useCallback(async (login: string, password: string) => {
+    setIsLoading(true);
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ login, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) return { error: data.error || 'Login failed' };
+      await refreshUser();
+      return {};
+    } catch {
+      return { error: 'Network error' };
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [refreshUser]);
+
+  const signUp = useCallback(async (email: string, username: string, password: string, displayName?: string) => {
+    setIsLoading(true);
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email, username, password, displayName }),
+      });
+      const data = await res.json();
+      if (!res.ok) return { error: data.error || 'Registration failed' };
+      await refreshUser();
+      return {};
+    } catch {
+      return { error: 'Network error' };
+    } finally {
+      setIsLoading(false);
+    }
+  }, [refreshUser]);
+
+  const signOut = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+      setUser(null);
+      setHasSession(false);
+      window.location.href = '/login';
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const updateUser = useCallback((updates: Partial<AuthUser>) => {
+    setUser((prev) => prev ? { ...prev, ...updates } : null);
+  }, []);
 
   if (isLoading) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   }
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, signInWithGoogle, signOut, hasSession }}>
+    <AuthContext.Provider value={{ user, isLoading, hasSession, refreshUser, signIn, signUp, signOut, updateUser }}>
       {children}
     </AuthContext.Provider>
   );

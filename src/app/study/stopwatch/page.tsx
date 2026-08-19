@@ -56,44 +56,34 @@ function getWeekStart(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function loadDailyStats(): { totalTime: number; sessionCount: number } {
-  const key = `stopwatch-stats-${getTodayKey()}`;
+async function loadDailyStats(): Promise<{ totalTime: number; sessionCount: number }> {
+  const today = getTodayKey();
   try {
-    const raw = localStorage.getItem(key);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return { totalTime: 0, sessionCount: 0 };
-}
-
-function saveDailyStats(time: number) {
-  const key = `stopwatch-stats-${getTodayKey()}`;
-  try {
-    const existing = loadDailyStats();
-    const updated = {
-      totalTime: existing.totalTime + time,
-      sessionCount: existing.sessionCount + 1,
+    const res = await fetch('/api/data/study-sessions', { credentials: 'include' });
+    if (!res.ok) return { totalTime: 0, sessionCount: 0 };
+    const sessions: Array<{ startTime: string; duration: number }> = await res.json();
+    const todaySessions = sessions.filter((s) => s.startTime && s.startTime.startsWith(today));
+    return {
+      totalTime: todaySessions.reduce((sum, s) => sum + (s.duration || 0), 0) * 60,
+      sessionCount: todaySessions.length,
     };
-    localStorage.setItem(key, JSON.stringify(updated));
-  } catch {}
+  } catch {
+    return { totalTime: 0, sessionCount: 0 };
+  }
 }
 
-function loadWeekStats(): number {
+async function loadWeekStats(): Promise<number> {
   const weekStart = getWeekStart();
-  let total = 0;
   try {
-    const d = new Date();
-    const current = new Date(weekStart);
-    while (current <= d) {
-      const k = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}-${String(current.getDate()).padStart(2, '0')}`;
-      const raw = localStorage.getItem(`stopwatch-stats-${k}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        total += parsed.totalTime || 0;
-      }
-      current.setDate(current.getDate() + 1);
-    }
-  } catch {}
-  return total;
+    const res = await fetch('/api/data/study-sessions', { credentials: 'include' });
+    if (!res.ok) return 0;
+    const sessions: Array<{ startTime: string; duration: number }> = await res.json();
+    return sessions
+      .filter((s) => s.startTime && s.startTime >= weekStart)
+      .reduce((sum, s) => sum + (s.duration || 0), 0) * 60;
+  } catch {
+    return 0;
+  }
 }
 
 export default function StudyStopwatch() {
@@ -137,8 +127,11 @@ export default function StudyStopwatch() {
   }, []);
 
   useEffect(() => {
-    setDailyStats(loadDailyStats());
-    setWeeklyTotal(loadWeekStats());
+    const loadStats = async () => {
+      setDailyStats(await loadDailyStats());
+      setWeeklyTotal(await loadWeekStats());
+    };
+    loadStats();
   }, []);
 
   useEffect(() => {
@@ -198,9 +191,8 @@ export default function StudyStopwatch() {
     lapCounterRef.current = 0;
 
     if (sessionTime > 0.5) {
-      saveDailyStats(sessionTime);
-      setDailyStats(loadDailyStats());
-      setWeeklyTotal(loadWeekStats());
+      loadDailyStats().then(setDailyStats);
+      loadWeekStats().then(setWeeklyTotal);
       setShowSaveDialog(true);
     }
   };
@@ -249,6 +241,8 @@ export default function StudyStopwatch() {
       console.error('Failed to save session:', err);
     }
     setShowSaveDialog(false);
+    loadDailyStats().then(setDailyStats);
+    loadWeekStats().then(setWeeklyTotal);
   };
 
   const handleDiscardSession = () => {

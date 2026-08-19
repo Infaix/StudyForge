@@ -1,318 +1,218 @@
 import { Subject, Topic, Assessment, StudySession, StudyTask, Flashcard, FlashcardDeck, Quiz, QuizQuestion, QuizResult, UserSettings, UserProfile, AuthUser, FriendRequest, Group, GroupMember, GroupInvite, StudyActivity, XpTransaction, Achievement, UserAchievement, Notification } from '@/types';
 
-const DB_NAME = 'StudyForgeDB';
-const DB_VERSION = 1;
-
-interface StoreConfig {
-  name: string;
-  keyPath: string;
-  indexes?: { name: string; keyPath: string; options?: IDBIndexParameters }[];
+async function apiGet<T>(url: string): Promise<T> {
+  const res = await fetch(url, { credentials: 'include' });
+  if (!res.ok) throw new Error(`API GET ${url} failed: ${res.status}`);
+  return res.json();
 }
 
-const STORES: StoreConfig[] = [
-  { name: 'subjects', keyPath: 'id' },
-  { name: 'topics', keyPath: 'id', indexes: [{ name: 'subjectId', keyPath: 'subjectId' }] },
-  { name: 'assessments', keyPath: 'id', indexes: [{ name: 'subjectId', keyPath: 'subjectId' }] },
-  { name: 'studySessions', keyPath: 'id', indexes: [{ name: 'subjectId', keyPath: 'subjectId' }] },
-  { name: 'studyTasks', keyPath: 'id', indexes: [{ name: 'subjectId', keyPath: 'subjectId' }] },
-  { name: 'flashcards', keyPath: 'id', indexes: [{ name: 'deckId', keyPath: 'deckId' }] },
-  { name: 'flashcardDecks', keyPath: 'id', indexes: [{ name: 'subjectId', keyPath: 'subjectId' }] },
-  { name: 'quizzes', keyPath: 'id', indexes: [{ name: 'subjectId', keyPath: 'subjectId' }] },
-  { name: 'quizQuestions', keyPath: 'id', indexes: [{ name: 'quizId', keyPath: 'quizId' }] },
-  { name: 'quizResults', keyPath: 'id', indexes: [{ name: 'quizId', keyPath: 'quizId' }] },
-  { name: 'userSettings', keyPath: 'id' },
-  { name: 'userProfiles', keyPath: 'id', indexes: [{ name: 'username', keyPath: 'username' }] },
-  { name: 'friendRequests', keyPath: 'id', indexes: [{ name: 'fromUserId', keyPath: 'fromUserId' }, { name: 'toUserId', keyPath: 'toUserId' }] },
-  { name: 'groups', keyPath: 'id', indexes: [{ name: 'administratorId', keyPath: 'administratorId' }] },
-  { name: 'groupMembers', keyPath: 'id', indexes: [{ name: 'groupId', keyPath: 'groupId' }, { name: 'userId', keyPath: 'userId' }] },
-  { name: 'groupInvites', keyPath: 'id', indexes: [{ name: 'groupId', keyPath: 'groupId' }, { name: 'toUserId', keyPath: 'toUserId' }] },
-  { name: 'studyActivities', keyPath: 'id', indexes: [{ name: 'userId', keyPath: 'userId' }] },
-  { name: 'xpTransactions', keyPath: 'id' },
-  { name: 'achievements', keyPath: 'id' },
-  { name: 'userAchievements', keyPath: 'id', indexes: [{ name: 'userId', keyPath: 'userId' }, { name: 'achievementId', keyPath: 'achievementId' }] },
-  { name: 'notifications', keyPath: 'id', indexes: [{ name: 'userId', keyPath: 'userId' }] },
-];
-
-let db: IDBDatabase | null = null;
-
-function getDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    if (db) {
-      resolve(db);
-      return;
-    }
-
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => {
-      db = request.result;
-      resolve(db);
-    };
-
-    request.onupgradeneeded = (event) => {
-      const database = (event.target as IDBOpenDBRequest).result;
-
-      STORES.forEach((store) => {
-        if (!database.objectStoreNames.contains(store.name)) {
-          const objectStore = database.createObjectStore(store.name, { keyPath: store.keyPath });
-          store.indexes?.forEach((index) => {
-            objectStore.createIndex(index.name, index.keyPath, index.options);
-          });
-        }
-      });
-    };
+async function apiPost<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(body),
   });
+  if (!res.ok) throw new Error(`API POST ${url} failed: ${res.status}`);
+  return res.json();
 }
 
-async function getAll<T>(storeName: string): Promise<T[]> {
-  const database = await getDB();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(storeName, 'readonly');
-    const store = transaction.objectStore(storeName);
-    const request = store.getAll();
-
-    request.onsuccess = () => resolve(request.result as T[]);
-    request.onerror = () => reject(request.error);
+async function apiPut<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(body),
   });
+  if (!res.ok) throw new Error(`API PUT ${url} failed: ${res.status}`);
+  return res.json();
 }
 
-async function get<T>(storeName: string, id: string): Promise<T | null> {
-  const database = await getDB();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(storeName, 'readonly');
-    const store = transaction.objectStore(storeName);
-    const request = store.get(id);
-
-    request.onsuccess = () => resolve(request.result as T || null);
-    request.onerror = () => reject(request.error);
-  });
+async function apiDelete(url: string): Promise<void> {
+  const res = await fetch(url, { method: 'DELETE', credentials: 'include' });
+  if (!res.ok) throw new Error(`API DELETE ${url} failed: ${res.status}`);
 }
 
-async function add<T>(storeName: string, item: T): Promise<void> {
-  const database = await getDB();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(storeName, 'readwrite');
-    const store = transaction.objectStore(storeName);
-    const request = store.add(item);
-
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function put<T>(storeName: string, item: T): Promise<void> {
-  const database = await getDB();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(storeName, 'readwrite');
-    const store = transaction.objectStore(storeName);
-    const request = store.put(item);
-
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function remove(storeName: string, id: string): Promise<void> {
-  const database = await getDB();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(storeName, 'readwrite');
-    const store = transaction.objectStore(storeName);
-    const request = store.delete(id);
-
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function getByIndex<T>(storeName: string, indexName: string, value: string): Promise<T[]> {
-  const database = await getDB();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(storeName, 'readonly');
-    const store = transaction.objectStore(storeName);
-    const index = store.index(indexName);
-    const request = index.getAll(value);
-
-    request.onsuccess = () => resolve(request.result as T[]);
-    request.onerror = () => reject(request.error);
-  });
+function qs(params: Record<string, string>): string {
+  const entries = Object.entries(params).filter(([, v]) => v);
+  return entries.length ? '?' + new URLSearchParams(entries).toString() : '';
 }
 
 export const subjectStorage = {
-  getAll: () => getAll<Subject>('subjects'),
-  get: (id: string) => get<Subject>('subjects', id),
-  create: (subject: Subject) => add('subjects', subject),
-  update: (subject: Subject) => put('subjects', subject),
-  delete: (id: string) => remove('subjects', id),
+  getAll: () => apiGet<Subject[]>('/api/data/subjects'),
+  get: (id: string) => apiGet<Subject>(`/api/data/subjects/${id}`),
+  create: (subject: Subject) => apiPost('/api/data/subjects', subject),
+  update: (subject: Subject) => apiPut(`/api/data/subjects/${subject.id}`, subject),
+  delete: (id: string) => apiDelete(`/api/data/subjects/${id}`),
 };
 
 export const topicStorage = {
-  getAll: () => getAll<Topic>('topics'),
-  get: (id: string) => get<Topic>('topics', id),
-  getBySubject: (subjectId: string) => getByIndex<Topic>('topics', 'subjectId', subjectId),
-  create: (topic: Topic) => add('topics', topic),
-  update: (topic: Topic) => put('topics', topic),
-  delete: (id: string) => remove('topics', id),
+  getAll: () => apiGet<Topic[]>('/api/data/topics'),
+  get: (id: string) => apiGet<Topic>(`/api/data/topics/${id}`),
+  getBySubject: (subjectId: string) => apiGet<Topic[]>(`/api/data/topics${qs({ subjectId })}`),
+  create: (topic: Topic) => apiPost('/api/data/topics', topic),
+  update: (topic: Topic) => apiPut(`/api/data/topics/${topic.id}`, topic),
+  delete: (id: string) => apiDelete(`/api/data/topics/${id}`),
 };
 
 export const assessmentStorage = {
-  getAll: () => getAll<Assessment>('assessments'),
-  get: (id: string) => get<Assessment>('assessments', id),
-  getBySubject: (subjectId: string) => getByIndex<Assessment>('assessments', 'subjectId', subjectId),
-  create: (assessment: Assessment) => add('assessments', assessment),
-  update: (assessment: Assessment) => put('assessments', assessment),
-  delete: (id: string) => remove('assessments', id),
+  getAll: () => apiGet<Assessment[]>('/api/data/assessments'),
+  get: (id: string) => apiGet<Assessment>(`/api/data/assessments/${id}`),
+  getBySubject: (subjectId: string) => apiGet<Assessment[]>(`/api/data/assessments${qs({ subjectId })}`),
+  create: (assessment: Assessment) => apiPost('/api/data/assessments', assessment),
+  update: (assessment: Assessment) => apiPut(`/api/data/assessments/${assessment.id}`, assessment),
+  delete: (id: string) => apiDelete(`/api/data/assessments/${id}`),
 };
 
 export const studySessionStorage = {
-  getAll: () => getAll<StudySession>('studySessions'),
-  get: (id: string) => get<StudySession>('studySessions', id),
-  getBySubject: (subjectId: string) => getByIndex<StudySession>('studySessions', 'subjectId', subjectId),
-  create: (session: StudySession) => add('studySessions', session),
-  update: (session: StudySession) => put('studySessions', session),
-  delete: (id: string) => remove('studySessions', id),
+  getAll: () => apiGet<StudySession[]>('/api/data/study-sessions'),
+  get: (id: string) => apiGet<StudySession>(`/api/data/study-sessions/${id}`),
+  getBySubject: (subjectId: string) => apiGet<StudySession[]>(`/api/data/study-sessions${qs({ subjectId })}`),
+  create: (session: StudySession) => apiPost('/api/data/study-sessions', session),
+  update: (session: StudySession) => apiPut(`/api/data/study-sessions/${session.id}`, session),
+  delete: (id: string) => apiDelete(`/api/data/study-sessions/${id}`),
 };
 
 export const studyTaskStorage = {
-  getAll: () => getAll<StudyTask>('studyTasks'),
-  get: (id: string) => get<StudyTask>('studyTasks', id),
-  getBySubject: (subjectId: string) => getByIndex<StudyTask>('studyTasks', 'subjectId', subjectId),
-  create: (task: StudyTask) => add('studyTasks', task),
-  update: (task: StudyTask) => put('studyTasks', task),
-  delete: (id: string) => remove('studyTasks', id),
+  getAll: () => apiGet<StudyTask[]>('/api/data/study-tasks'),
+  get: (id: string) => apiGet<StudyTask>(`/api/data/study-tasks/${id}`),
+  getBySubject: (subjectId: string) => apiGet<StudyTask[]>(`/api/data/study-tasks${qs({ subjectId })}`),
+  create: (task: StudyTask) => apiPost('/api/data/study-tasks', task),
+  update: (task: StudyTask) => apiPut(`/api/data/study-tasks/${task.id}`, task),
+  delete: (id: string) => apiDelete(`/api/data/study-tasks/${id}`),
 };
 
 export const flashcardStorage = {
-  getAll: () => getAll<Flashcard>('flashcards'),
-  get: (id: string) => get<Flashcard>('flashcards', id),
-  getByDeck: (deckId: string) => getByIndex<Flashcard>('flashcards', 'deckId', deckId),
-  create: (card: Flashcard) => add('flashcards', card),
-  update: (card: Flashcard) => put('flashcards', card),
-  delete: (id: string) => remove('flashcards', id),
+  getAll: () => apiGet<Flashcard[]>('/api/data/flashcards'),
+  get: (id: string) => apiGet<Flashcard>(`/api/data/flashcards/${id}`),
+  getByDeck: (deckId: string) => apiGet<Flashcard[]>(`/api/data/flashcards${qs({ deckId })}`),
+  create: (card: Flashcard) => apiPost('/api/data/flashcards', card),
+  update: (card: Flashcard) => apiPut(`/api/data/flashcards/${card.id}`, card),
+  delete: (id: string) => apiDelete(`/api/data/flashcards/${id}`),
 };
 
 export const flashcardDeckStorage = {
-  getAll: () => getAll<FlashcardDeck>('flashcardDecks'),
-  get: (id: string) => get<FlashcardDeck>('flashcardDecks', id),
-  getBySubject: (subjectId: string) => getByIndex<FlashcardDeck>('flashcardDecks', 'subjectId', subjectId),
-  create: (deck: FlashcardDeck) => add('flashcardDecks', deck),
-  update: (deck: FlashcardDeck) => put('flashcardDecks', deck),
-  delete: (id: string) => remove('flashcardDecks', id),
+  getAll: () => apiGet<FlashcardDeck[]>('/api/data/flashcard-decks'),
+  get: (id: string) => apiGet<FlashcardDeck>(`/api/data/flashcard-decks/${id}`),
+  getBySubject: (subjectId: string) => apiGet<FlashcardDeck[]>(`/api/data/flashcard-decks${qs({ subjectId })}`),
+  create: (deck: FlashcardDeck) => apiPost('/api/data/flashcard-decks', deck),
+  update: (deck: FlashcardDeck) => apiPut(`/api/data/flashcard-decks/${deck.id}`, deck),
+  delete: (id: string) => apiDelete(`/api/data/flashcard-decks/${id}`),
 };
 
 export const quizStorage = {
-  getAll: () => getAll<Quiz>('quizzes'),
-  get: (id: string) => get<Quiz>('quizzes', id),
-  getBySubject: (subjectId: string) => getByIndex<Quiz>('quizzes', 'subjectId', subjectId),
-  create: (quiz: Quiz) => add('quizzes', quiz),
-  update: (quiz: Quiz) => put('quizzes', quiz),
-  delete: (id: string) => remove('quizzes', id),
+  getAll: () => apiGet<Quiz[]>('/api/data/quizzes'),
+  get: (id: string) => apiGet<Quiz>(`/api/data/quizzes/${id}`),
+  getBySubject: (subjectId: string) => apiGet<Quiz[]>(`/api/data/quizzes${qs({ subjectId })}`),
+  create: (quiz: Quiz) => apiPost('/api/data/quizzes', quiz),
+  update: (quiz: Quiz) => apiPut(`/api/data/quizzes/${quiz.id}`, quiz),
+  delete: (id: string) => apiDelete(`/api/data/quizzes/${id}`),
 };
 
 export const quizQuestionStorage = {
-  getAll: () => getAll<QuizQuestion>('quizQuestions'),
-  get: (id: string) => get<QuizQuestion>('quizQuestions', id),
-  getByQuiz: (quizId: string) => getByIndex<QuizQuestion>('quizQuestions', 'quizId', quizId),
-  create: (question: QuizQuestion) => add('quizQuestions', question),
-  update: (question: QuizQuestion) => put('quizQuestions', question),
-  delete: (id: string) => remove('quizQuestions', id),
+  getAll: () => apiGet<QuizQuestion[]>('/api/data/quiz-questions'),
+  get: (id: string) => apiGet<QuizQuestion>(`/api/data/quiz-questions/${id}`),
+  getByQuiz: (quizId: string) => apiGet<QuizQuestion[]>(`/api/data/quiz-questions${qs({ quizId })}`),
+  create: (question: QuizQuestion) => apiPost('/api/data/quiz-questions', question),
+  update: (question: QuizQuestion) => apiPut(`/api/data/quiz-questions/${question.id}`, question),
+  delete: (id: string) => apiDelete(`/api/data/quiz-questions/${id}`),
 };
 
 export const quizResultStorage = {
-  getAll: () => getAll<QuizResult>('quizResults'),
-  get: (id: string) => get<QuizResult>('quizResults', id),
-  getByQuiz: (quizId: string) => getByIndex<QuizResult>('quizResults', 'quizId', quizId),
-  create: (result: QuizResult) => add('quizResults', result),
-  update: (result: QuizResult) => put('quizResults', result),
-  delete: (id: string) => remove('quizResults', id),
+  getAll: () => apiGet<QuizResult[]>('/api/data/quiz-results'),
+  get: (id: string) => apiGet<QuizResult>(`/api/data/quiz-results/${id}`),
+  getByQuiz: (quizId: string) => apiGet<QuizResult[]>(`/api/data/quiz-results${qs({ quizId })}`),
+  create: (result: QuizResult) => apiPost('/api/data/quiz-results', result),
+  update: (result: QuizResult) => apiPut(`/api/data/quiz-results/${result.id}`, result),
+  delete: (id: string) => apiDelete(`/api/data/quiz-results/${id}`),
 };
 
 export const userSettingsStorage = {
-  get: (id: string = 'default') => get<UserSettings>('userSettings', id),
-  create: (settings: UserSettings) => add('userSettings', settings),
-  update: (settings: UserSettings) => put('userSettings', settings),
+  get: (_id: string = 'default') => apiGet<UserSettings>('/api/data/user-settings'),
+  create: (settings: UserSettings) => apiPost('/api/data/user-settings', settings),
+  update: (settings: UserSettings) => apiPut('/api/data/user-settings/default', settings),
 };
 
 export const userProfileStorage = {
-  getAll: () => getAll<UserProfile>('userProfiles'),
-  get: (id: string = 'default') => get<UserProfile>('userProfiles', id),
-  getByUsername: (username: string) => {
-    return getByIndex<UserProfile>('userProfiles', 'username', username).then((results) => results[0] ?? null);
+  getAll: () => apiGet<UserProfile[]>('/api/data/user-profiles'),
+  get: (id: string = 'default') => {
+    if (id === 'current-user') {
+      return apiGet<{ user: AuthUser }>('/api/auth/me').then((r) => r.user as unknown as UserProfile);
+    }
+    return apiGet<UserProfile>(`/api/data/user-profiles/${id}`);
   },
-  create: (profile: UserProfile) => add('userProfiles', profile),
-  update: (profile: UserProfile) => put('userProfiles', profile),
-  delete: (id: string) => remove('userProfiles', id),
+  getByUsername: (username: string) =>
+    apiGet<UserProfile[]>(`/api/data/user-profiles${qs({ username })}`).then((r) => r[0] ?? null),
+  create: (profile: UserProfile) => apiPost('/api/data/user-profiles', profile),
+  update: (profile: UserProfile) => apiPut(`/api/data/user-profiles/${profile.id}`, profile),
+  delete: (id: string) => apiDelete(`/api/data/user-profiles/${id}`),
 };
 
 export const friendRequestStorage = {
-  getAllByUser: (userId: string) => getByIndex<FriendRequest>('friendRequests', 'toUserId', userId),
-  getAllSentByUser: (userId: string) => getByIndex<FriendRequest>('friendRequests', 'fromUserId', userId),
-  get: (id: string) => get<FriendRequest>('friendRequests', id),
-  create: (request: FriendRequest) => add('friendRequests', request),
-  update: (request: FriendRequest) => put('friendRequests', request),
-  delete: (id: string) => remove('friendRequests', id),
+  getAllByUser: (userId: string) => apiGet<FriendRequest[]>(`/api/data/friend-requests${qs({ toUserId: userId })}`),
+  getAllSentByUser: (userId: string) => apiGet<FriendRequest[]>(`/api/data/friend-requests${qs({ fromUserId: userId })}`),
+  get: (id: string) => apiGet<FriendRequest>(`/api/data/friend-requests/${id}`),
+  create: (request: FriendRequest) => apiPost('/api/data/friend-requests', request),
+  update: (request: FriendRequest) => apiPut(`/api/data/friend-requests/${request.id}`, request),
+  delete: (id: string) => apiDelete(`/api/data/friend-requests/${id}`),
 };
 
 export const groupStorage = {
-  getAllByAdministrator: (adminId: string) => getByIndex<Group>('groups', 'administratorId', adminId),
-  get: (id: string) => get<Group>('groups', id),
-  create: (group: Group) => add('groups', group),
-  update: (group: Group) => put('groups', group),
-  delete: (id: string) => remove('groups', id),
+  getAllByAdministrator: (adminId: string) => apiGet<Group[]>(`/api/data/groups${qs({ administratorId: adminId })}`),
+  get: (id: string) => apiGet<Group>(`/api/data/groups/${id}`),
+  create: (group: Group) => apiPost('/api/data/groups', group),
+  update: (group: Group) => apiPut(`/api/data/groups/${group.id}`, group),
+  delete: (id: string) => apiDelete(`/api/data/groups/${id}`),
 };
 
 export const groupMemberStorage = {
-  getAllByGroup: (groupId: string) => getByIndex<GroupMember>('groupMembers', 'groupId', groupId),
-  getAllByUser: (userId: string) => getByIndex<GroupMember>('groupMembers', 'userId', userId),
-  get: (id: string) => get<GroupMember>('groupMembers', id),
-  create: (member: GroupMember) => add('groupMembers', member),
-  update: (member: GroupMember) => put('groupMembers', member),
-  delete: (id: string) => remove('groupMembers', id),
+  getAllByGroup: (groupId: string) => apiGet<GroupMember[]>(`/api/data/group-members${qs({ groupId })}`),
+  getAllByUser: (userId: string) => apiGet<GroupMember[]>(`/api/data/group-members${qs({ userId })}`),
+  get: (id: string) => apiGet<GroupMember>(`/api/data/group-members/${id}`),
+  create: (member: GroupMember) => apiPost('/api/data/group-members', member),
+  update: (member: GroupMember) => apiPut(`/api/data/group-members/${member.id}`, member),
+  delete: (id: string) => apiDelete(`/api/data/group-members/${id}`),
 };
 
 export const groupInviteStorage = {
-  getAllByGroup: (groupId: string) => getByIndex<GroupInvite>('groupInvites', 'groupId', groupId),
-  getAllPendingByUser: (userId: string) => getByIndex<GroupInvite>('groupInvites', 'toUserId', userId),
-  get: (id: string) => get<GroupInvite>('groupInvites', id),
-  create: (invite: GroupInvite) => add('groupInvites', invite),
-  update: (invite: GroupInvite) => put('groupInvites', invite),
-  delete: (id: string) => remove('groupInvites', id),
+  getAllByGroup: (groupId: string) => apiGet<GroupInvite[]>(`/api/data/group-invites${qs({ groupId })}`),
+  getAllPendingByUser: (userId: string) => apiGet<GroupInvite[]>(`/api/data/group-invites${qs({ toUserId: userId })}`),
+  get: (id: string) => apiGet<GroupInvite>(`/api/data/group-invites/${id}`),
+  create: (invite: GroupInvite) => apiPost('/api/data/group-invites', invite),
+  update: (invite: GroupInvite) => apiPut(`/api/data/group-invites/${invite.id}`, invite),
+  delete: (id: string) => apiDelete(`/api/data/group-invites/${id}`),
 };
 
 export const studyActivityStorage = {
-  create: (activity: StudyActivity) => add('studyActivities', activity),
-  getAllByUser: (userId: string) => getByIndex<StudyActivity>('studyActivities', 'userId', userId),
-  get: (id: string) => get<StudyActivity>('studyActivities', id),
+  create: (activity: StudyActivity) => apiPost('/api/data/study-activities', activity),
+  getAllByUser: (userId: string) => apiGet<StudyActivity[]>(`/api/data/study-activities${qs({ userId })}`),
+  get: (id: string) => apiGet<StudyActivity>(`/api/data/study-activities/${id}`),
 };
 
 export const xpTransactionStorage = {
-  getAll: () => getAll<XpTransaction>('xpTransactions'),
-  create: (transaction: XpTransaction) => add('xpTransactions', transaction),
-  getAllByUser: (userId: string) => getByIndex<XpTransaction>('xpTransactions', 'userId', userId),
-  get: (id: string) => get<XpTransaction>('xpTransactions', id),
+  getAll: () => apiGet<XpTransaction[]>('/api/data/xp-transactions'),
+  create: (transaction: XpTransaction) => apiPost('/api/data/xp-transactions', transaction),
+  getAllByUser: (userId: string) => apiGet<XpTransaction[]>(`/api/data/xp-transactions${qs({ userId })}`),
+  get: (id: string) => apiGet<XpTransaction>(`/api/data/xp-transactions/${id}`),
 };
 
 export const achievementStorage = {
-  getAll: () => getAll<Achievement>('achievements'),
-  get: (id: string) => get<Achievement>('achievements', id),
+  getAll: () => apiGet<Achievement[]>('/api/data/achievements'),
+  get: (id: string) => apiGet<Achievement>(`/api/data/achievements/${id}`),
 };
 
 export const userAchievementStorage = {
-  getAllByUser: (userId: string) => getByIndex<UserAchievement>('userAchievements', 'userId', userId),
-  get: (id: string) => get<UserAchievement>('userAchievements', id),
-  create: (ua: UserAchievement) => add('userAchievements', ua),
+  getAllByUser: (userId: string) => apiGet<UserAchievement[]>(`/api/data/user-achievements${qs({ userId })}`),
+  get: (id: string) => apiGet<UserAchievement>(`/api/data/user-achievements/${id}`),
+  create: (ua: UserAchievement) => apiPost('/api/data/user-achievements', ua),
 };
 
 export const notificationStorage = {
-  create: (notification: Notification) => add('notifications', notification),
-  getAllByUser: (userId: string) => getByIndex<Notification>('notifications', 'userId', userId),
-  get: (id: string) => get<Notification>('notifications', id),
-  markRead: async (id: string) => {
-    const notification = await get<Notification>('notifications', id);
-    return put('notifications', { ...notification, read: true });
-  },
-  markAllRead: async (userId: string) => {
-    const notifications = await getByIndex<Notification>('notifications', 'userId', userId);
-    notifications.forEach((n) => put('notifications', { ...n, read: true }));
-  },
+  create: (notification: Notification) => apiPost('/api/social/notifications', notification),
+  getAllByUser: (_userId: string) => apiGet<Notification[]>('/api/social/notifications'),
+  get: (id: string) => apiGet<Notification>(`/api/data/notifications/${id}`),
+  markRead: (id: string) => apiPut('/api/social/notifications', { notificationId: id, action: 'markRead' }),
+  markAllRead: (_userId: string) => apiPut('/api/social/notifications', { action: 'markAllRead' }),
 };
+
+export { apiGet, apiPost, apiPut, apiDelete };
