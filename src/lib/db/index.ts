@@ -123,6 +123,11 @@ export const ENTITIES: Record<string, EntityConfig> = {
     columns: { id: 'id', type: 'type', title: 'title', message: 'message', read: 'read', relatedId: 'related_id', createdAt: 'created_at' },
     hasUserId: true,
   },
+  'user-profiles': {
+    table: 'user_profiles',
+    columns: { id: 'user_id', displayName: 'display_name', avatarUrl: 'avatar_url', bio: 'bio', xp: 'xp', level: 'level', streak: 'streak', studyTimeToday: 'study_time_today', studyTimeThisWeek: 'study_time_this_week', studyTimeThisMonth: 'study_time_this_month', studyTimeAllTime: 'study_time_all_time', privacyProfilePublic: 'privacy_profile_public', privacyShowStats: 'privacy_show_stats', privacyShowActivity: 'privacy_show_activity', privacyShowLeaderboardStats: 'privacy_show_leaderboard_stats', privacyShowSubjects: 'privacy_show_subjects', createdAt: 'created_at', updatedAt: 'updated_at' },
+    hasUserId: true,
+  },
 };
 
 export function toSnakeCase(obj: Record<string, unknown>, columnMap: Record<string, string>): Record<string, unknown> {
@@ -160,7 +165,7 @@ export function deserializeJsonFields(row: Record<string, unknown>, fields: stri
       try { result[field] = JSON.parse(result[field] as string); } catch { /* keep as-is */ }
     }
   }
-  return row;
+  return result;
 }
 
 const FILTER_ALIASES: Record<string, string> = {

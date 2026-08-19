@@ -32,10 +32,11 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const db = getDB();
-    const userId = request.headers.get('x-user-id');
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const callerUserId = request.headers.get('x-user-id');
+    if (!callerUserId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const body = await request.json();
+    const targetUserId = body.userId || callerUserId;
 
     const id = body.id || crypto.randomUUID();
     const type = body.type;
@@ -51,7 +52,7 @@ export async function POST(request: NextRequest) {
 
     await db.prepare(
       'INSERT INTO notifications (id, user_id, type, title, message, read, related_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    ).bind(id, userId, type, title, message, read, relatedId, createdAt).run();
+    ).bind(id, targetUserId, type, title, message, read, relatedId, createdAt).run();
 
     return NextResponse.json({ id }, { status: 201 });
   } catch (error) {

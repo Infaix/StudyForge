@@ -142,7 +142,7 @@ export const userProfileStorage = {
     return apiGet<UserProfile>(`/api/data/user-profiles/${id}`);
   },
   getByUsername: (username: string) =>
-    apiGet<UserProfile[]>(`/api/data/user-profiles${qs({ username })}`).then((r) => r[0] ?? null),
+    apiGet<{ user: UserProfile }>(`/api/social/profile/${encodeURIComponent(username)}`).then((r) => r.user ?? null),
   create: (profile: UserProfile) => apiPost('/api/data/user-profiles', profile),
   update: (profile: UserProfile) => apiPut(`/api/data/user-profiles/${profile.id}`, profile),
   delete: (id: string) => apiDelete(`/api/data/user-profiles/${id}`),

@@ -12,8 +12,8 @@ import {
   Progress,
   EmptyState,
 } from '@/components/ui';
-import { userProfileStorage, studySessionStorage, subjectStorage } from '@/lib/storage';
-import { UserProfile, StudySession, Subject } from '@/types';
+import { userProfileStorage } from '@/lib/storage';
+import { UserProfile } from '@/types';
 import {
   getFriendshipStatus,
   sendFriendRequest,
@@ -23,7 +23,6 @@ import {
   canViewProfile,
   canViewStats,
   canViewActivity,
-  canViewSubjects,
   formatStudyTime,
   formatTimeAgo,
   type FriendshipStatus,
@@ -77,8 +76,6 @@ export default function PublicProfilePage() {
   const [friendshipStatus, setFriendshipStatus] = useState<FriendshipStatus>('none');
   const [isLoading, setIsLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
-  const [sessions, setSessions] = useState<StudySession[]>([]);
-  const [subjects, setSubjects] = useState<Subject[]>([]);
 
   const loadProfile = useCallback(async () => {
     try {
@@ -97,24 +94,6 @@ export default function PublicProfilePage() {
       if (user) {
         const status = await getFriendshipStatus(user.id, profile.id);
         setFriendshipStatus(status);
-
-        if (canViewStats(user.id, migrated)) {
-          const allSessions = await studySessionStorage.getAll();
-          const userSessions = allSessions.filter((s) => {
-            try {
-              const profile2 = userProfileStorage.get('current-user');
-              return true;
-            } catch {
-              return false;
-            }
-          });
-          setSessions(allSessions.filter((s) => s.subjectId));
-        }
-
-        if (canViewSubjects(user.id, migrated)) {
-          const allSubjects = await subjectStorage.getAll();
-          setSubjects(allSubjects);
-        }
       }
     } catch (err) {
       console.error('Failed to load profile:', err);
@@ -188,13 +167,6 @@ export default function PublicProfilePage() {
     }
   };
 
-  const getSubjectsStudied = (): string[] => {
-    const subjectIds = new Set(sessions.map((s) => s.subjectId));
-    return subjects.filter((s) => subjectIds.has(s.id)).map((s) => s.name);
-  };
-
-  const totalSessions = sessions.length;
-
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
@@ -231,7 +203,6 @@ export default function PublicProfilePage() {
   const isOwner = user?.id === targetUser.id;
   const showStats = canViewStats(user?.id ?? null, targetUser);
   const showActivity = canViewActivity(user?.id ?? null, targetUser);
-  const showSubjects = canViewSubjects(user?.id ?? null, targetUser);
   const isPrivate = !canViewProfile(user?.id ?? null, targetUser);
 
   if (isPrivate) {
@@ -316,7 +287,7 @@ export default function PublicProfilePage() {
               <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Statistics</h2>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                 <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
                   <p className="text-2xl font-bold text-gray-900 dark:text-white">{targetUser.streak}</p>
                   <p className="text-xs text-gray-500 dark:text-gray-400">Day{targetUser.streak !== 1 ? 's' : ''} Streak</p>
@@ -326,12 +297,8 @@ export default function PublicProfilePage() {
                   <p className="text-xs text-gray-500 dark:text-gray-400">Total Study</p>
                 </div>
                 <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-                  <p className="text-2xl font-bold text-gray-900 dark:text-white">{totalSessions}</p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">Sessions</p>
-                </div>
-                <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-                  <p className="text-2xl font-bold text-gray-900 dark:text-white">{getSubjectsStudied().length}</p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">Subject{getSubjectsStudied().length !== 1 ? 's' : ''}</p>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-white">{targetUser.level}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Level</p>
                 </div>
               </div>
 
@@ -346,21 +313,6 @@ export default function PublicProfilePage() {
                 <p className="text-lg font-bold text-gray-900 dark:text-white mt-2">
                   {targetUser.xp.toLocaleString()} XP
                 </p>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {showSubjects && getSubjectsStudied().length > 0 && (
-          <Card>
-            <CardHeader>
-              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Subjects Studied</h2>
-            </CardHeader>
-            <CardContent>
-              <div className="flex flex-wrap gap-2">
-                {getSubjectsStudied().map((name) => (
-                  <Badge key={name} variant="info">{name}</Badge>
-                ))}
               </div>
             </CardContent>
           </Card>

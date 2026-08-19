@@ -28,8 +28,8 @@ async function getProfileById(id: string): Promise<UserProfile | null> {
       const data = await api<{ user: UserProfile }>('/api/auth/me');
       return data.user ? migrateProfile(data.user) : null;
     }
-    const p = await api<UserProfile>(`/api/data/user-profiles/${id}`);
-    return p ? migrateProfile(p) : null;
+    const data = await api<{ user: UserProfile }>(`/api/social/profile/by-id/${id}`);
+    return data.user ? migrateProfile(data.user) : null;
   } catch {
     return null;
   }
@@ -147,8 +147,10 @@ export async function cancelFriendRequest(
   request: FriendRequest
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await api('/api/data/friend-requests/' + request.id, {
-      method: 'DELETE',
+    await api('/api/social/friends', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'cancel', requestId: request.id }),
     });
     return { success: true };
   } catch (e) {
@@ -469,11 +471,13 @@ export async function computeLeaderboard(
   period: LeaderboardPeriod,
   category: LeaderboardCategory,
   currentUserId: string,
-  _friendIds?: string[]
+  friendIds?: string[]
 ): Promise<LeaderboardEntry[]> {
   try {
+    const params = new URLSearchParams({ category, period });
+    if (friendIds && friendIds.length > 0) params.set('friends', 'true');
     return await api<LeaderboardEntry[]>(
-      `/api/social/leaderboard?category=${category}&period=${period}`
+      `/api/social/leaderboard?${params.toString()}`
     );
   } catch {
     return [];
@@ -495,7 +499,7 @@ export async function getFriendSuggestions(
 
   try {
     const allUsers = await api<Array<{ id: string; username: string; displayName: string }>>(
-      '/api/social/search?q='
+      '/api/social/search?q=' + encodeURIComponent(userId.substring(0, 3))
     );
 
     const suggestions: FriendSuggestion[] = [];
@@ -570,14 +574,10 @@ export async function awardXP(
   reason: string,
   relatedId: string | null = null
 ): Promise<{ newTotal: number; newLevel: number; leveledUp: boolean }> {
-  const profile = await getProfileById(userId);
-  if (!profile) return { newTotal: 0, newLevel: 1, leveledUp: false };
-
   await api('/api/data/xp-transactions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      id: generateId('xp'),
       userId,
       amount,
       reason,
@@ -585,6 +585,9 @@ export async function awardXP(
       createdAt: new Date().toISOString(),
     }),
   });
+
+  const profile = await getProfileById(userId);
+  if (!profile) return { newTotal: 0, newLevel: 1, leveledUp: false };
 
   const newTotal = profile.xp + amount;
   const newLevel = Math.floor(newTotal / 100) + 1;

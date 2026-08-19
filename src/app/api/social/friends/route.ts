@@ -41,10 +41,13 @@ export async function POST(request: NextRequest) {
     const userId = request.headers.get('x-user-id');
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const { toUserId, action } = await request.json();
+    const body = await request.json();
+    const { action } = body;
 
     if (action === 'request') {
+      const { toUserId } = body;
       if (!toUserId) return NextResponse.json({ error: 'toUserId required' }, { status: 400 });
+      if (userId === toUserId) return NextResponse.json({ error: 'Cannot friend yourself' }, { status: 400 });
 
       const existing = await db.prepare(`
         SELECT id FROM friend_requests
@@ -53,21 +56,28 @@ export async function POST(request: NextRequest) {
       `).bind(userId, toUserId, toUserId, userId).first();
       if (existing) return NextResponse.json({ error: 'Request already pending' }, { status: 409 });
 
-      const alreadyFriends = await db.prepare(`
-        SELECT 1 FROM friendships WHERE (user_id_1 = ? AND user_id_2 = ?) OR (user_id_1 = ? AND user_id_2 = ?)
-      `).bind(userId < toUserId ? userId : toUserId, userId < toUserId ? toUserId : userId, toUserId < userId ? toUserId : userId, toUserId < userId ? userId : toUserId).first();
+      const user1 = userId < toUserId ? userId : toUserId;
+      const user2 = userId < toUserId ? toUserId : userId;
+      const alreadyFriends = await db.prepare(
+        'SELECT 1 FROM friendships WHERE user_id_1 = ? AND user_id_2 = ?'
+      ).bind(user1, user2).first();
       if (alreadyFriends) return NextResponse.json({ error: 'Already friends' }, { status: 409 });
 
       const id = crypto.randomUUID();
+      const now = new Date().toISOString();
       await db.prepare(
         'INSERT INTO friend_requests (id, from_user_id, to_user_id, status, created_at) VALUES (?, ?, ?, ?, ?)'
-      ).bind(id, userId, toUserId, 'pending', new Date().toISOString()).run();
+      ).bind(id, userId, toUserId, 'pending', now).run();
+
+      await db.prepare(
+        'INSERT INTO notifications (id, user_id, type, title, message, read, related_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(crypto.randomUUID(), toUserId, 'friend_request', 'Friend Request', 'sent you a friend request', 0, id, now).run();
 
       return NextResponse.json({ ok: true, requestId: id });
     }
 
     if (action === 'accept') {
-      const { requestId } = await request.json();
+      const { requestId } = body;
       if (!requestId) return NextResponse.json({ error: 'requestId required' }, { status: 400 });
 
       const requestRow = await db.prepare(
@@ -83,24 +93,35 @@ export async function POST(request: NextRequest) {
       await db.batch([
         db.prepare('UPDATE friend_requests SET status = ? WHERE id = ?').bind('accepted', requestId),
         db.prepare('INSERT OR IGNORE INTO friendships (user_id_1, user_id_2, created_at) VALUES (?, ?, ?)').bind(user1, user2, now),
+        db.prepare(
+          'INSERT INTO notifications (id, user_id, type, title, message, read, related_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        ).bind(crypto.randomUUID(), fromUserId, 'friend_request_accepted', 'Friend Request Accepted', 'accepted your friend request', 0, requestId, now),
       ]);
 
       return NextResponse.json({ ok: true });
     }
 
     if (action === 'decline') {
-      const { requestId } = await request.json();
+      const { requestId } = body;
+      if (!requestId) return NextResponse.json({ error: 'requestId required' }, { status: 400 });
       await db.prepare('UPDATE friend_requests SET status = ? WHERE id = ? AND to_user_id = ?').bind('declined', requestId, userId).run();
       return NextResponse.json({ ok: true });
     }
 
     if (action === 'remove') {
-      const { friendId } = await request.json();
+      const { friendId } = body;
       if (!friendId) return NextResponse.json({ error: 'friendId required' }, { status: 400 });
 
       const user1 = userId < friendId ? userId : friendId;
       const user2 = userId < friendId ? friendId : userId;
       await db.prepare('DELETE FROM friendships WHERE user_id_1 = ? AND user_id_2 = ?').bind(user1, user2).run();
+      return NextResponse.json({ ok: true });
+    }
+
+    if (action === 'cancel') {
+      const { requestId } = body;
+      if (!requestId) return NextResponse.json({ error: 'requestId required' }, { status: 400 });
+      await db.prepare('DELETE FROM friend_requests WHERE id = ? AND from_user_id = ? AND status = ?').bind(requestId, userId, 'pending').run();
       return NextResponse.json({ ok: true });
     }
 

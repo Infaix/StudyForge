@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDB, ENTITIES, toCamelCase, toSnakeCase, serializeJsonFields, deserializeJsonFields, FILTER_ALIASES } from '@/lib/db';
 
-const MUTATION_BLOCKED = new Set(['achievements', 'friend-requests', 'group-members', 'group-invites']);
+const MUTATION_BLOCKED = new Set(['achievements', 'friend-requests', 'group-members', 'group-invites', 'user-achievements', 'xp-transactions']);
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ entity: string }> }) {
   const { entity } = await params;
@@ -16,6 +16,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   try {
     const db = getDB();
     const { searchParams } = new URL(request.url);
+    const validColumns = new Set(Object.values(config.columns));
 
     let sql = `SELECT * FROM ${config.table}`;
     const conditions: string[] = [];
@@ -27,8 +28,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     }
 
     for (const [key, value] of searchParams.entries()) {
-      if (key === 'userId') continue;
+      if (key === 'userId' || key === 'limit') continue;
       const sqlKey = FILTER_ALIASES[key] || key;
+      if (!validColumns.has(sqlKey)) continue;
       conditions.push(`${sqlKey} = ?`);
       bindings.push(value);
     }
@@ -79,10 +81,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const id = body.id || crypto.randomUUID();
 
     const record: Record<string, unknown> = { ...body, id };
-    if (config.hasUserId && userId) record.userId = userId;
 
     let snakeData = toSnakeCase(record, config.columns);
     if (config.jsonFields) snakeData = serializeJsonFields(snakeData, config.jsonFields);
+
+    if (config.hasUserId && userId) snakeData.user_id = userId;
 
     const keys = Object.keys(snakeData);
     const placeholders = keys.map(() => '?').join(', ');
