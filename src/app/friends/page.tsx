@@ -1,14 +1,52 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/navigation';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, Button, Input, Badge, EmptyState } from '@/components/ui';
-import { userProfileStorage, friendRequestStorage } from '@/lib/storage';
+import {
+  searchUsers,
+  sendFriendRequest,
+  acceptFriendRequest,
+  declineFriendRequest,
+  cancelFriendRequest,
+  removeFriend,
+  getFriends,
+  getReceivedRequests,
+  getSentRequests,
+  getFriendSuggestions,
+  formatTimeAgo,
+  type SearchResult,
+  type FriendSuggestion,
+} from '@/lib/social/socialService';
 import { UserProfile, FriendRequest } from '@/types';
 
-type Tab = 'friends' | 'received' | 'sent' | 'search';
+type Tab = 'friends' | 'received' | 'sent' | 'search' | 'suggestions';
+
+function renderAvatar(profile: UserProfile, size: string = 'w-10 h-10') {
+  if (profile.avatarUrl) {
+    return (
+      <img
+        src={profile.avatarUrl}
+        alt={profile.displayName || profile.username}
+        className={`${size} rounded-full object-cover`}
+      />
+    );
+  }
+  const name = profile.displayName || profile.username || 'U';
+  const initials = name
+    .split(' ')
+    .map((w: string) => w[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2);
+  return (
+    <div className={`${size} rounded-full bg-blue-500 text-white flex items-center justify-center text-sm font-medium flex-shrink-0`}>
+      {initials}
+    </div>
+  );
+}
 
 export default function FriendsPage() {
   const { user } = useAuth();
@@ -17,39 +55,28 @@ export default function FriendsPage() {
   const [mounted, setMounted] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('friends');
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<UserProfile[]>([]);
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [friends, setFriends] = useState<UserProfile[]>([]);
   const [receivedRequests, setReceivedRequests] = useState<(FriendRequest & { fromProfile?: UserProfile | null })[]>([]);
   const [sentRequests, setSentRequests] = useState<(FriendRequest & { toProfile?: UserProfile | null })[]>([]);
+  const [suggestions, setSuggestions] = useState<FriendSuggestion[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => { setMounted(true); }, []);
 
   useEffect(() => {
-    if (mounted && !user) {
-      router.push('/login');
-    }
+    if (mounted && !user) router.push('/login');
   }, [mounted, user, router]);
 
   const loadFriends = useCallback(async () => {
     if (!user) return;
     try {
-      const profile = await userProfileStorage.get(user.id);
-      if (!profile || !profile.friends || profile.friends.length === 0) {
-        setFriends([]);
-        return;
-      }
-      const friendProfiles = await Promise.all(
-        profile.friends.map(async (friendId) => {
-          const p = await userProfileStorage.get(friendId);
-          return p;
-        })
-      );
-      setFriends(friendProfiles.filter((p): p is UserProfile => p !== null));
+      const result = await getFriends(user.id);
+      setFriends(result);
     } catch (err) {
       console.error('Failed to load friends:', err);
     }
@@ -58,15 +85,8 @@ export default function FriendsPage() {
   const loadReceivedRequests = useCallback(async () => {
     if (!user) return;
     try {
-      const requests = await friendRequestStorage.getAllByUser(user.id);
-      const pending = requests.filter((r) => r.status === 'pending');
-      const enriched = await Promise.all(
-        pending.map(async (req) => {
-          const fromProfile = await userProfileStorage.get(req.fromUserId);
-          return { ...req, fromProfile };
-        })
-      );
-      setReceivedRequests(enriched);
+      const result = await getReceivedRequests(user.id);
+      setReceivedRequests(result);
     } catch (err) {
       console.error('Failed to load received requests:', err);
     }
@@ -75,65 +95,68 @@ export default function FriendsPage() {
   const loadSentRequests = useCallback(async () => {
     if (!user) return;
     try {
-      const requests = await friendRequestStorage.getAllSentByUser(user.id);
-      const pending = requests.filter((r) => r.status === 'pending');
-      const enriched = await Promise.all(
-        pending.map(async (req) => {
-          const toProfile = await userProfileStorage.get(req.toUserId);
-          return { ...req, toProfile };
-        })
-      );
-      setSentRequests(enriched);
+      const result = await getSentRequests(user.id);
+      setSentRequests(result);
     } catch (err) {
       console.error('Failed to load sent requests:', err);
     }
   }, [user]);
 
+  const loadSuggestions = useCallback(async () => {
+    if (!user) return;
+    try {
+      const result = await getFriendSuggestions(user.id);
+      setSuggestions(result);
+    } catch (err) {
+      console.error('Failed to load suggestions:', err);
+    }
+  }, [user]);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
-    await Promise.all([loadFriends(), loadReceivedRequests(), loadSentRequests()]);
+    await Promise.all([loadFriends(), loadReceivedRequests(), loadSentRequests(), loadSuggestions()]);
     setLoading(false);
-  }, [loadFriends, loadReceivedRequests, loadSentRequests]);
+  }, [loadFriends, loadReceivedRequests, loadSentRequests, loadSuggestions]);
 
   useEffect(() => {
-    if (mounted && user) {
-      loadAll();
-    }
+    if (mounted && user) loadAll();
   }, [mounted, user, loadAll]);
 
-  const handleSearch = async () => {
-    if (!searchQuery.trim() || !user) return;
+  const handleSearch = useCallback(async (query: string) => {
+    if (!user || !query.trim()) {
+      setSearchResults([]);
+      return;
+    }
     setSearching(true);
     try {
-      const result = await userProfileStorage.getByUsername(searchQuery.trim());
-      if (result && result.id !== user.id) {
-        setSearchResults([result]);
-      } else {
-        setSearchResults([]);
-      }
+      const results = await searchUsers(query, user.id);
+      setSearchResults(results);
     } catch (err) {
       console.error('Search failed:', err);
       setSearchResults([]);
     } finally {
       setSearching(false);
     }
-  };
+  }, [user]);
+
+  const handleSearchInputChange = useCallback((value: string) => {
+    setSearchQuery(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      handleSearch(value);
+    }, 300);
+  }, [handleSearch]);
 
   const handleSendRequest = async (targetUser: UserProfile) => {
     if (!user) return;
     setActionLoading(targetUser.id);
     try {
-      const request: FriendRequest = {
-        id: `fr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        fromUserId: user.id,
-        toUserId: targetUser.id,
-        message: null,
-        status: 'pending',
-        createdAt: new Date().toISOString(),
-      };
-      await friendRequestStorage.create(request);
-      await loadSentRequests();
-      setSearchResults((prev) => prev.filter((u) => u.id !== targetUser.id));
+      const result = await sendFriendRequest(user.id, targetUser.id);
+      if (result.success) {
+        await loadSentRequests();
+        setSearchResults((prev) => prev.filter((r) => r.profile.id !== targetUser.id));
+        await loadSuggestions();
+      }
     } catch (err) {
       console.error('Failed to send request:', err);
     } finally {
@@ -145,27 +168,8 @@ export default function FriendsPage() {
     if (!user) return;
     setActionLoading(request.id);
     try {
-      await friendRequestStorage.update({ ...request, status: 'accepted' });
-
-      const myProfile = await userProfileStorage.get(user.id);
-      if (myProfile) {
-        await userProfileStorage.update({
-          ...myProfile,
-          friends: [...(myProfile.friends || []), request.fromUserId],
-          friendRequestsReceived: (myProfile.friendRequestsReceived || []).filter((id) => id !== request.fromUserId),
-        });
-      }
-
-      const fromProfile = await userProfileStorage.get(request.fromUserId);
-      if (fromProfile) {
-        await userProfileStorage.update({
-          ...fromProfile,
-          friends: [...(fromProfile.friends || []), user.id],
-          friendRequestsSent: (fromProfile.friendRequestsSent || []).filter((id) => id !== user.id),
-        });
-      }
-
-      await Promise.all([loadFriends(), loadReceivedRequests()]);
+      await acceptFriendRequest(user.id, request);
+      await Promise.all([loadFriends(), loadReceivedRequests(), loadSuggestions()]);
     } catch (err) {
       console.error('Failed to accept request:', err);
     } finally {
@@ -174,9 +178,10 @@ export default function FriendsPage() {
   };
 
   const handleDeclineRequest = async (request: FriendRequest) => {
+    if (!user) return;
     setActionLoading(request.id);
     try {
-      await friendRequestStorage.update({ ...request, status: 'declined' });
+      await declineFriendRequest(user.id, request);
       await loadReceivedRequests();
     } catch (err) {
       console.error('Failed to decline request:', err);
@@ -186,9 +191,10 @@ export default function FriendsPage() {
   };
 
   const handleCancelRequest = async (request: FriendRequest) => {
+    if (!user) return;
     setActionLoading(request.id);
     try {
-      await friendRequestStorage.update({ ...request, status: 'cancelled' });
+      await cancelFriendRequest(user.id, request);
       await loadSentRequests();
     } catch (err) {
       console.error('Failed to cancel request:', err);
@@ -199,25 +205,11 @@ export default function FriendsPage() {
 
   const handleRemoveFriend = async (friendId: string) => {
     if (!user) return;
+    if (!window.confirm('Are you sure you want to remove this friend?')) return;
     setActionLoading(friendId);
     try {
-      const myProfile = await userProfileStorage.get(user.id);
-      if (myProfile) {
-        await userProfileStorage.update({
-          ...myProfile,
-          friends: myProfile.friends.filter((id) => id !== friendId),
-        });
-      }
-
-      const friendProfile = await userProfileStorage.get(friendId);
-      if (friendProfile) {
-        await userProfileStorage.update({
-          ...friendProfile,
-          friends: friendProfile.friends.filter((id) => id !== user.id),
-        });
-      }
-
-      await loadFriends();
+      await removeFriend(user.id, friendId);
+      await Promise.all([loadFriends(), loadSuggestions()]);
     } catch (err) {
       console.error('Failed to remove friend:', err);
     } finally {
@@ -225,42 +217,14 @@ export default function FriendsPage() {
     }
   };
 
-  const getInitials = (profile: UserProfile) => {
-    const name = profile.displayName || profile.username;
-    return name
-      .split(' ')
-      .map((w) => w[0])
-      .join('')
-      .toUpperCase()
-      .slice(0, 2);
-  };
-
-  const renderAvatar = (profile: UserProfile, size: string = 'w-10 h-10') => {
-    if (profile.avatarUrl) {
-      return (
-        <img
-          src={profile.avatarUrl}
-          alt={profile.displayName || profile.username}
-          className={`${size} rounded-full object-cover`}
-        />
-      );
-    }
-    return (
-      <div className={`${size} rounded-full bg-blue-500 text-white flex items-center justify-center text-sm font-medium`}>
-        {getInitials(profile)}
-      </div>
-    );
-  };
-
-  if (!mounted || !user) {
-    return null;
-  }
+  if (!mounted || !user) return null;
 
   const tabs: { key: Tab; label: string; count?: number }[] = [
     { key: 'friends', label: 'Friends', count: friends.length },
-    { key: 'received', label: 'Received', count: receivedRequests.length },
+    { key: 'received', label: 'Requests', count: receivedRequests.length },
     { key: 'sent', label: 'Sent', count: sentRequests.length },
     { key: 'search', label: 'Find' },
+    { key: 'suggestions', label: 'Suggestions' },
   ];
 
   return (
@@ -279,9 +243,7 @@ export default function FriendsPage() {
             >
               {tab.label}
               {tab.count !== undefined && tab.count > 0 && (
-                <Badge variant="danger" className="ml-2">
-                  {tab.count}
-                </Badge>
+                <Badge variant="danger" className="ml-2">{tab.count}</Badge>
               )}
             </Button>
           ))}
@@ -290,62 +252,75 @@ export default function FriendsPage() {
         {activeTab === 'search' && (
           <Card>
             <CardHeader>
-              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-                Find Friends
-              </h2>
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Find Friends</h2>
             </CardHeader>
             <CardContent>
-              <div className="flex gap-2">
-                <Input
-                  placeholder="Search by username..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                />
-                <Button
-                  variant="primary"
-                  size="md"
-                  onClick={handleSearch}
-                  disabled={searching || !searchQuery.trim()}
-                >
-                  {searching ? 'Searching...' : 'Search'}
-                </Button>
-              </div>
+              <Input
+                placeholder="Search by username or display name..."
+                value={searchQuery}
+                onChange={(e) => handleSearchInputChange(e.target.value)}
+              />
 
-              {searchResults.length > 0 && (
+              {searching && (
+                <p className="mt-4 text-sm text-gray-500 dark:text-gray-400 text-center">Searching...</p>
+              )}
+
+              {!searching && searchResults.length > 0 && (
                 <div className="mt-4 space-y-3">
-                  {searchResults.map((profile) => (
+                  {searchResults.map((result) => (
                     <div
-                      key={profile.id}
+                      key={result.profile.id}
                       className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50"
                     >
-                      <div className="flex items-center gap-3">
-                        {renderAvatar(profile)}
-                        <div>
-                          <p className="font-medium text-gray-900 dark:text-white">
-                            {profile.displayName || profile.username}
+                      <div
+                        className="flex items-center gap-3 cursor-pointer min-w-0"
+                        onClick={() => router.push(`/profile/${result.profile.username}`)}
+                      >
+                        {renderAvatar(result.profile)}
+                        <div className="min-w-0">
+                          <p className="font-medium text-gray-900 dark:text-white truncate">
+                            {result.profile.displayName || result.profile.username}
                           </p>
-                          <p className="text-xs text-gray-500 dark:text-gray-400">
-                            @{profile.username} · Level {profile.level}
+                          <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                            @{result.profile.username} · Level {result.profile.level}
                           </p>
                         </div>
                       </div>
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        onClick={() => handleSendRequest(profile)}
-                        disabled={actionLoading === profile.id}
-                      >
-                        {actionLoading === profile.id ? 'Sending...' : 'Add Friend'}
-                      </Button>
+                      <div className="flex-shrink-0 ml-3">
+                        {result.status === 'friends' ? (
+                          <Badge variant="success">Friends</Badge>
+                        ) : result.status === 'pending_outgoing' ? (
+                          <Badge variant="warning">Request Sent</Badge>
+                        ) : result.status === 'pending_incoming' ? (
+                          <div className="flex gap-1">
+                            <Button variant="primary" size="sm" disabled>Accept</Button>
+                            <Button variant="ghost" size="sm" disabled>Decline</Button>
+                          </div>
+                        ) : (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            onClick={() => handleSendRequest(result.profile)}
+                            disabled={actionLoading === result.profile.id}
+                          >
+                            {actionLoading === result.profile.id ? 'Sending...' : 'Add Friend'}
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
               )}
 
-              {searchQuery && !searching && searchResults.length === 0 && (
+              {!searching && searchQuery && searchResults.length === 0 && (
                 <p className="mt-4 text-sm text-gray-500 dark:text-gray-400 text-center">
                   No users found matching &quot;{searchQuery}&quot;
+                </p>
+              )}
+
+              {!searchQuery && !searching && (
+                <p className="mt-4 text-sm text-gray-500 dark:text-gray-400 text-center">
+                  Type a username or display name to search for users.
                 </p>
               )}
             </CardContent>
@@ -361,12 +336,22 @@ export default function FriendsPage() {
             </CardHeader>
             <CardContent>
               {loading ? (
-                <p className="text-gray-500 dark:text-gray-400 text-center py-4">Loading...</p>
+                <div className="space-y-3">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="animate-pulse flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+                      <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-700" />
+                      <div className="flex-1">
+                        <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-32 mb-1" />
+                        <div className="h-3 bg-gray-200 dark:bg-gray-700 rounded w-24" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
               ) : friends.length === 0 ? (
                 <EmptyState
-                  icon={<span className="text-3xl">👤</span>}
+                  icon={<span className="text-3xl">👥</span>}
                   title="No friends yet"
-                  description="Search for other users and send them a friend request."
+                  description="Search for other users and send them a friend request, or check out suggestions."
                   action={{
                     label: 'Find Friends',
                     onClick: () => setActiveTab('search'),
@@ -379,14 +364,17 @@ export default function FriendsPage() {
                       key={friend.id}
                       className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50"
                     >
-                      <div className="flex items-center gap-3">
+                      <div
+                        className="flex items-center gap-3 cursor-pointer min-w-0"
+                        onClick={() => router.push(`/profile/${friend.username}`)}
+                      >
                         {renderAvatar(friend)}
-                        <div>
-                          <p className="font-medium text-gray-900 dark:text-white">
+                        <div className="min-w-0">
+                          <p className="font-medium text-gray-900 dark:text-white truncate">
                             {friend.displayName || friend.username}
                           </p>
                           <p className="text-xs text-gray-500 dark:text-gray-400">
-                            @{friend.username} · Level {friend.level}
+                            @{friend.username} · Level {friend.level} · {friend.xp.toLocaleString()} XP
                           </p>
                         </div>
                       </div>
@@ -395,7 +383,7 @@ export default function FriendsPage() {
                         size="sm"
                         onClick={() => handleRemoveFriend(friend.id)}
                         disabled={actionLoading === friend.id}
-                        className="text-red-600 hover:text-red-700 dark:text-red-400"
+                        className="text-red-600 hover:text-red-700 dark:text-red-400 flex-shrink-0 ml-3"
                       >
                         Remove
                       </Button>
@@ -430,26 +418,27 @@ export default function FriendsPage() {
                       key={request.id}
                       className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50"
                     >
-                      <div className="flex items-center gap-3">
+                      <div
+                        className="flex items-center gap-3 cursor-pointer min-w-0"
+                        onClick={() => request.fromProfile && router.push(`/profile/${request.fromProfile.username}`)}
+                      >
                         {request.fromProfile ? (
                           renderAvatar(request.fromProfile)
                         ) : (
-                          <div className="w-10 h-10 rounded-full bg-gray-300 dark:bg-gray-600 flex items-center justify-center text-sm">
-                            ?
-                          </div>
+                          <div className="w-10 h-10 rounded-full bg-gray-300 dark:bg-gray-600 flex items-center justify-center text-sm flex-shrink-0">?</div>
                         )}
-                        <div>
-                          <p className="font-medium text-gray-900 dark:text-white">
+                        <div className="min-w-0">
+                          <p className="font-medium text-gray-900 dark:text-white truncate">
                             {request.fromProfile
                               ? request.fromProfile.displayName || request.fromProfile.username
-                              : request.fromUserId}
+                              : 'Unknown User'}
                           </p>
                           <p className="text-xs text-gray-500 dark:text-gray-400">
-                            {new Date(request.createdAt).toLocaleDateString()}
+                            {formatTimeAgo(request.createdAt)}
                           </p>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-shrink-0 ml-3">
                         <Button
                           variant="primary"
                           size="sm"
@@ -502,22 +491,23 @@ export default function FriendsPage() {
                       key={request.id}
                       className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50"
                     >
-                      <div className="flex items-center gap-3">
+                      <div
+                        className="flex items-center gap-3 cursor-pointer min-w-0"
+                        onClick={() => request.toProfile && router.push(`/profile/${request.toProfile.username}`)}
+                      >
                         {request.toProfile ? (
                           renderAvatar(request.toProfile)
                         ) : (
-                          <div className="w-10 h-10 rounded-full bg-gray-300 dark:bg-gray-600 flex items-center justify-center text-sm">
-                            ?
-                          </div>
+                          <div className="w-10 h-10 rounded-full bg-gray-300 dark:bg-gray-600 flex items-center justify-center text-sm flex-shrink-0">?</div>
                         )}
-                        <div>
-                          <p className="font-medium text-gray-900 dark:text-white">
+                        <div className="min-w-0">
+                          <p className="font-medium text-gray-900 dark:text-white truncate">
                             {request.toProfile
                               ? request.toProfile.displayName || request.toProfile.username
-                              : request.toUserId}
+                              : 'Unknown User'}
                           </p>
                           <p className="text-xs text-gray-500 dark:text-gray-400">
-                            Sent {new Date(request.createdAt).toLocaleDateString()}
+                            Sent {formatTimeAgo(request.createdAt)}
                           </p>
                         </div>
                       </div>
@@ -526,9 +516,68 @@ export default function FriendsPage() {
                         size="sm"
                         onClick={() => handleCancelRequest(request)}
                         disabled={actionLoading === request.id}
-                        className="text-red-600 hover:text-red-700 dark:text-red-400"
+                        className="text-red-600 hover:text-red-700 dark:text-red-400 flex-shrink-0 ml-3"
                       >
                         Cancel
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {activeTab === 'suggestions' && (
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                People You May Know
+              </h2>
+            </CardHeader>
+            <CardContent>
+              {loading ? (
+                <p className="text-gray-500 dark:text-gray-400 text-center py-4">Loading...</p>
+              ) : suggestions.length === 0 ? (
+                <EmptyState
+                  icon={<span className="text-3xl">💡</span>}
+                  title="No suggestions yet"
+                  description="Add more subjects and complete study sessions to get friend suggestions based on shared interests."
+                />
+              ) : (
+                <div className="space-y-3">
+                  {suggestions.map((suggestion) => (
+                    <div
+                      key={suggestion.profile.id}
+                      className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50"
+                    >
+                      <div
+                        className="flex items-center gap-3 cursor-pointer min-w-0"
+                        onClick={() => router.push(`/profile/${suggestion.profile.username}`)}
+                      >
+                        {renderAvatar(suggestion.profile)}
+                        <div className="min-w-0">
+                          <p className="font-medium text-gray-900 dark:text-white truncate">
+                            {suggestion.profile.displayName || suggestion.profile.username}
+                          </p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
+                            @{suggestion.profile.username} · Level {suggestion.profile.level}
+                          </p>
+                          <p className="text-xs text-gray-400 dark:text-gray-500">
+                            {suggestion.mutualFriends > 0 && `${suggestion.mutualFriends} mutual friend${suggestion.mutualFriends !== 1 ? 's' : ''}`}
+                            {suggestion.mutualFriends > 0 && suggestion.sharedSubjects.length > 0 && ' · '}
+                            {suggestion.sharedSubjects.length > 0 && `${suggestion.sharedSubjects.length} shared subject${suggestion.sharedSubjects.length !== 1 ? 's' : ''}`}
+                          </p>
+                        </div>
+                      </div>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => handleSendRequest(suggestion.profile)}
+                        disabled={actionLoading === suggestion.profile.id}
+                        className="flex-shrink-0 ml-3"
+                      >
+                        {actionLoading === suggestion.profile.id ? 'Sending...' : 'Add Friend'}
                       </Button>
                     </div>
                   ))}

@@ -19,6 +19,7 @@ const navigation = [
   { name: 'Formulas', href: '/formulas', icon: '📐' },
   { name: 'Leaderboard', href: '/leaderboard', icon: '🏆' },
   { name: 'Friends', href: '/friends', icon: '👥' },
+  { name: 'Social', href: '/social', icon: '📢' },
   { name: 'Groups', href: '/groups', icon: '👨‍👩‍👧‍👦' },
   { name: 'Profile', href: '/profile', icon: '👤' },
   { name: 'Settings', href: '/settings', icon: '⚙️' },

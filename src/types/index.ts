@@ -109,11 +109,28 @@ export interface UserSettings {
   updatedAt: string;
 }
 
+export interface PrivacySettings {
+  profilePublic: boolean;
+  showStats: boolean;
+  showActivity: boolean;
+  showLeaderboardStats: boolean;
+  showSubjects: boolean;
+}
+
+export const DEFAULT_PRIVACY_SETTINGS: PrivacySettings = {
+  profilePublic: true,
+  showStats: true,
+  showActivity: true,
+  showLeaderboardStats: true,
+  showSubjects: true,
+};
+
 export interface UserProfile {
   id: string;
   username: string;
   displayName: string;
   avatarUrl: string | null;
+  bio: string;
   xp: number;
   level: number;
   streak: number;
@@ -126,6 +143,7 @@ export interface UserProfile {
   friendRequestsSent: string[];
   groups: string[];
   achievements: string[];
+  privacy: PrivacySettings;
   createdAt: string;
   updatedAt: string;
 }
@@ -135,6 +153,7 @@ export interface AuthUser {
   username: string;
   displayName: string;
   avatarUrl: string | null;
+  bio: string;
   xp: number;
   level: number;
   streak: number;
@@ -147,6 +166,7 @@ export interface AuthUser {
   friendRequestsSent: string[];
   groups: string[];
   achievements: string[];
+  privacy: PrivacySettings;
   createdAt: string;
   updatedAt: string;
 }

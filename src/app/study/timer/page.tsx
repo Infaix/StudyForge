@@ -7,6 +7,7 @@ import { Card, CardContent, Button, Input, Badge } from '@/components/ui';
 import { Dialog } from '@/components/ui/Dialog';
 import { subjectStorage, studySessionStorage, userProfileStorage } from '@/lib/storage';
 import { useAuth } from '@/contexts/AuthContext';
+import { recordStudySessionComplete } from '@/lib/social/socialService';
 
 type TimerMode = 'stopwatch' | 'countdown' | 'pomodoro' | 'custom';
 
@@ -159,29 +160,49 @@ export default function StudyTimer() {
       if (!user || durationSeconds <= 0 || !selectedSubject) return;
       const now = new Date().toISOString();
       const startTime = new Date(Date.now() - durationSeconds * 1000).toISOString();
+      const sessionId = generateId();
+      const minutes = Math.floor(durationSeconds / 60);
+
       await studySessionStorage.create({
-        id: generateId(),
+        id: sessionId,
         subjectId: selectedSubject,
         topicId: null,
-        duration: Math.floor(durationSeconds / 60),
+        duration: minutes,
         startTime,
         endTime: now,
         notes: null,
       });
+
       try {
-        const profile = await userProfileStorage.get(user.id);
-        if (profile) {
-          const minutes = Math.floor(durationSeconds / 60);
-          await userProfileStorage.update({
-            ...profile,
-            studyTimeToday: profile.studyTimeToday + minutes,
-            studyTimeThisWeek: profile.studyTimeThisWeek + minutes,
-            studyTimeThisMonth: profile.studyTimeThisMonth + minutes,
-            studyTimeAllTime: profile.studyTimeAllTime + minutes,
-          });
-        }
+        await recordStudySessionComplete(
+          user.id,
+          {
+            id: sessionId,
+            subjectId: selectedSubject,
+            topicId: null,
+            duration: minutes,
+            startTime,
+            endTime: now,
+            notes: null,
+          },
+          selectedSubject
+        );
       } catch {
-        // Profile update is non-critical
+        // Non-critical: XP award is best-effort
+        try {
+          const profile = await userProfileStorage.get(user.id);
+          if (profile) {
+            await userProfileStorage.update({
+              ...profile,
+              studyTimeToday: profile.studyTimeToday + minutes,
+              studyTimeThisWeek: profile.studyTimeThisWeek + minutes,
+              studyTimeThisMonth: profile.studyTimeThisMonth + minutes,
+              studyTimeAllTime: profile.studyTimeAllTime + minutes,
+            });
+          }
+        } catch {
+          // Profile update is non-critical
+        }
       }
     },
     [user, selectedSubject]

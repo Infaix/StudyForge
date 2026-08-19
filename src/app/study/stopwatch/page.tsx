@@ -6,6 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, Button, Badge } from '@/components/ui';
 import { subjectStorage, studySessionStorage } from '@/lib/storage';
+import { recordStudySessionComplete } from '@/lib/social/socialService';
 
 const DEFAULT_SUBJECTS = [
   'Maths Methods',
@@ -230,16 +231,20 @@ export default function StudyStopwatch() {
 
   const handleSaveSession = async () => {
     if (!user) return;
+    const sessionId = `stopwatch-${Date.now()}`;
+    const minutes = Math.floor(totalTime / 60);
     try {
-      await studySessionStorage.create({
-        id: `stopwatch-${Date.now()}`,
+      const session = {
+        id: sessionId,
         subjectId: selectedSubject || 'unknown',
         topicId: null,
-        duration: totalTime,
+        duration: minutes,
         startTime: new Date(Date.now() - totalTime * 1000).toISOString(),
         endTime: new Date().toISOString(),
         notes: `Stopwatch session - ${laps.length} laps recorded`,
-      });
+      };
+      await studySessionStorage.create(session);
+      await recordStudySessionComplete(user.id, session, selectedSubject || 'Study');
     } catch (err) {
       console.error('Failed to save session:', err);
     }

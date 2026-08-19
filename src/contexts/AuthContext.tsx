@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
 
-import { AuthUser } from '@/types';
+import { AuthUser, DEFAULT_PRIVACY_SETTINGS } from '@/types';
 
 interface AuthContextType {
   user: AuthUser | null;
@@ -32,6 +32,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             username: profile.username,
             displayName: profile.displayName,
             avatarUrl: profile.avatarUrl,
+            bio: profile.bio ?? '',
             xp: profile.xp ?? 0,
             level: profile.level ?? 1,
             streak: profile.streak ?? 0,
@@ -44,6 +45,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             friendRequestsSent: profile.friendRequestsSent ?? [],
             groups: profile.groups ?? [],
             achievements: profile.achievements ?? [],
+            privacy: profile.privacy ?? DEFAULT_PRIVACY_SETTINGS,
             createdAt: profile.createdAt,
             updatedAt: profile.updatedAt,
           });

@@ -13,7 +13,7 @@ import {
   Progress,
 } from '@/components/ui';
 import { userProfileStorage, studySessionStorage, subjectStorage } from '@/lib/storage';
-import { UserProfile, StudySession, Subject } from '@/types';
+import { UserProfile, StudySession, Subject, DEFAULT_PRIVACY_SETTINGS } from '@/types';
 
 const ACHIEVEMENTS_MAP: Record<string, { title: string; icon: string; description: string }> = {
   first_session: { title: 'First Steps', icon: '🎓', description: 'Complete your first study session' },
@@ -53,26 +53,15 @@ function compressImage(file: File): Promise<string> {
         const size = 512;
         let width = img.width;
         let height = img.height;
-
         if (width > height) {
-          if (width > size) {
-            height = Math.round((height * size) / width);
-            width = size;
-          }
+          if (width > size) { height = Math.round((height * size) / width); width = size; }
         } else {
-          if (height > size) {
-            width = Math.round((width * size) / height);
-            height = size;
-          }
+          if (height > size) { width = Math.round((width * size) / height); height = size; }
         }
-
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          reject(new Error('Failed to get canvas context'));
-          return;
-        }
+        if (!ctx) { reject(new Error('Failed to get canvas context')); return; }
         ctx.drawImage(img, 0, 0, width, height);
         resolve(canvas.toDataURL('image/jpeg', 0.8));
       };
@@ -94,6 +83,7 @@ export default function ProfilePage() {
   const [editing, setEditing] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [username, setUsername] = useState('');
+  const [bio, setBio] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -103,16 +93,11 @@ export default function ProfilePage() {
   const xpForNextLevel = (profile?.level ?? 1) * 100;
   const xpProgress = profile ? (profile.xp % ((profile.level || 1) * 100)) : 0;
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  useEffect(() => { setMounted(true); }, []);
 
   useEffect(() => {
     if (!mounted) return;
-    if (!user) {
-      router.push('/login');
-      return;
-    }
+    if (!user) { router.push('/login'); return; }
 
     const loadProfile = async () => {
       try {
@@ -123,9 +108,15 @@ export default function ProfilePage() {
         ]);
 
         if (storedProfile) {
-          setProfile(storedProfile);
-          setDisplayName(storedProfile.displayName || '');
-          setUsername(storedProfile.username || '');
+          const migrated = {
+            ...storedProfile,
+            bio: storedProfile.bio ?? '',
+            privacy: storedProfile.privacy ?? { ...DEFAULT_PRIVACY_SETTINGS },
+          };
+          setProfile(migrated);
+          setDisplayName(migrated.displayName || '');
+          setUsername(migrated.username || '');
+          setBio(migrated.bio || '');
         }
         setSessions(storedSessions);
         setSubjects(storedSubjects);
@@ -140,28 +131,14 @@ export default function ProfilePage() {
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    if (!file.type.startsWith('image/')) {
-      setError('Please select an image file.');
-      return;
-    }
-
-    if (file.size > 2 * 1024 * 1024) {
-      setError('Image size must be under 2MB.');
-      return;
-    }
-
+    if (!file.type.startsWith('image/')) { setError('Please select an image file.'); return; }
+    if (file.size > 2 * 1024 * 1024) { setError('Image size must be under 2MB.'); return; }
     setError(null);
     try {
       const compressed = await compressImage(file);
       setProfile((prev) => (prev ? { ...prev, avatarUrl: compressed } : prev));
-    } catch {
-      setError('Failed to process image.');
-    }
-
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    } catch { setError('Failed to process image.'); }
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleRemoveAvatar = () => {
@@ -170,15 +147,29 @@ export default function ProfilePage() {
 
   const handleSave = async () => {
     if (!profile || !displayName.trim() || !username.trim()) return;
-
     setError(null);
     setIsSaving(true);
 
     try {
+      const trimmedUsername = username.trim();
+      if (trimmedUsername.length < 3) { setError('Username must be at least 3 characters'); setIsSaving(false); return; }
+      if (trimmedUsername.length > 20) { setError('Username must be at most 20 characters'); setIsSaving(false); return; }
+      if (!/^[a-zA-Z0-9_]+$/.test(trimmedUsername)) { setError('Username can only contain letters, numbers, and underscores'); setIsSaving(false); return; }
+
+      if (trimmedUsername !== profile.username) {
+        const existing = await userProfileStorage.getByUsername(trimmedUsername);
+        if (existing && existing.id !== profile.id) {
+          setError('Username already taken. Please choose another.');
+          setIsSaving(false);
+          return;
+        }
+      }
+
       const updated: UserProfile = {
         ...profile,
         displayName: displayName.trim(),
-        username: username.trim(),
+        username: trimmedUsername,
+        bio: bio.trim(),
         updatedAt: new Date().toISOString(),
       };
       await userProfileStorage.update(updated);
@@ -195,25 +186,33 @@ export default function ProfilePage() {
     if (profile) {
       setDisplayName(profile.displayName || '');
       setUsername(profile.username || '');
+      setBio(profile.bio || '');
     }
     setError(null);
     setEditing(false);
   };
 
+  const handlePrivacyToggle = async (key: keyof typeof DEFAULT_PRIVACY_SETTINGS) => {
+    if (!profile) return;
+    const newPrivacy = {
+      ...profile.privacy,
+      [key]: !profile.privacy[key],
+    };
+    const updated = { ...profile, privacy: newPrivacy, updatedAt: new Date().toISOString() };
+    await userProfileStorage.update(updated);
+    setProfile(updated);
+  };
+
   const getInitials = (): string => {
     const name = profile?.displayName || profile?.username || 'U';
     const parts = name.trim().split(/\s+/);
-    if (parts.length >= 2) {
-      return (parts[0][0] + parts[1][0]).toUpperCase();
-    }
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
     return name.substring(0, 2).toUpperCase();
   };
 
   const getSubjectsStudied = (): string[] => {
     const subjectIds = new Set(sessions.map((s) => s.subjectId));
-    return subjects
-      .filter((s) => subjectIds.has(s.id))
-      .map((s) => s.name);
+    return subjects.filter((s) => subjectIds.has(s.id)).map((s) => s.name);
   };
 
   const totalSessions = sessions.length;
@@ -226,28 +225,33 @@ export default function ProfilePage() {
     );
   }
 
+  const privacySettings: { key: keyof typeof DEFAULT_PRIVACY_SETTINGS; label: string; description: string }[] = [
+    { key: 'profilePublic', label: 'Public Profile', description: 'Allow other users to view your profile' },
+    { key: 'showStats', label: 'Show Statistics', description: 'Display your study statistics on your profile' },
+    { key: 'showActivity', label: 'Show Activity', description: 'Allow friends to see your recent study activity' },
+    { key: 'showLeaderboardStats', label: 'Leaderboard Visibility', description: 'Appear on the public leaderboard' },
+    { key: 'showSubjects', label: 'Show Subjects', description: 'Display your studied subjects on your profile' },
+  ];
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold text-gray-900 dark:text-white">
-              Profile
-            </h2>
+            <h2 className="text-xl font-bold text-gray-900 dark:text-white">Profile</h2>
             {!editing ? (
-              <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
-                Edit Profile
-              </Button>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => router.push(`/profile/${profile.username}`)}>
+                  View Public
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+                  Edit Profile
+                </Button>
+              </div>
             ) : (
               <div className="flex gap-2">
-                <Button variant="ghost" size="sm" onClick={handleCancel}>
-                  Cancel
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={handleSave}
-                  disabled={isSaving || !displayName.trim() || !username.trim()}
-                >
+                <Button variant="ghost" size="sm" onClick={handleCancel}>Cancel</Button>
+                <Button size="sm" onClick={handleSave} disabled={isSaving || !displayName.trim() || !username.trim()}>
                   {isSaving ? 'Saving...' : 'Save'}
                 </Button>
               </div>
@@ -265,9 +269,7 @@ export default function ProfilePage() {
                 />
               ) : (
                 <div className="w-28 h-28 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center border-4 border-gray-200 dark:border-gray-700">
-                  <span className="text-3xl font-bold text-blue-600 dark:text-blue-300">
-                    {getInitials()}
-                  </span>
+                  <span className="text-3xl font-bold text-blue-600 dark:text-blue-300">{getInitials()}</span>
                 </div>
               )}
               <button
@@ -280,13 +282,7 @@ export default function ProfilePage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
                 </svg>
               </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleFileChange}
-                className="hidden"
-              />
+              <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileChange} className="hidden" />
               {profile.avatarUrl && (
                 <button
                   onClick={handleRemoveAvatar}
@@ -299,36 +295,37 @@ export default function ProfilePage() {
                 </button>
               )}
               {error && (
-                <p className="absolute -bottom-6 left-1/2 -translate-x-1/2 text-xs text-red-500 whitespace-nowrap">
-                  {error}
-                </p>
+                <p className="absolute -bottom-6 left-1/2 -translate-x-1/2 text-xs text-red-500 whitespace-nowrap">{error}</p>
               )}
             </div>
 
             <div className="flex-1 w-full space-y-4">
               {editing ? (
                 <div className="space-y-3">
-                  <Input
-                    label="Display Name"
-                    value={displayName}
-                    onChange={(e) => setDisplayName(e.target.value)}
-                    placeholder="Your display name"
-                  />
-                  <Input
-                    label="Username"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    placeholder="Your username"
-                  />
+                  <Input label="Display Name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Your display name" />
+                  <Input label="Username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Your username" />
+                  <div className="w-full">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Bio</label>
+                    <textarea
+                      value={bio}
+                      onChange={(e) => setBio(e.target.value)}
+                      placeholder="Tell others about yourself..."
+                      maxLength={200}
+                      rows={3}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:border-gray-600 dark:text-white resize-none"
+                    />
+                    <p className="text-xs text-gray-400 mt-1">{bio.length}/200</p>
+                  </div>
                 </div>
               ) : (
                 <div>
                   <h3 className="text-2xl font-bold text-gray-900 dark:text-white">
                     {profile.displayName || profile.username}
                   </h3>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">
-                    @{profile.username}
-                  </p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">@{profile.username}</p>
+                  {profile.bio && (
+                    <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">{profile.bio}</p>
+                  )}
                   <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
                     Member since {new Date(profile.createdAt).toLocaleDateString()}
                   </p>
@@ -337,36 +334,20 @@ export default function ProfilePage() {
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                 <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-                  <p className="text-2xl font-bold text-gray-900 dark:text-white">
-                    {profile.streak}
-                  </p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    Day{profile.streak !== 1 ? 's' : ''} Streak
-                  </p>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-white">{profile.streak}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Day{profile.streak !== 1 ? 's' : ''} Streak</p>
                 </div>
                 <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-                  <p className="text-2xl font-bold text-gray-900 dark:text-white">
-                    {formatStudyTime(profile.studyTimeAllTime)}
-                  </p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    Total Study
-                  </p>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-white">{formatStudyTime(profile.studyTimeAllTime)}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Total Study</p>
                 </div>
                 <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-                  <p className="text-2xl font-bold text-gray-900 dark:text-white">
-                    {totalSessions}
-                  </p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    Sessions
-                  </p>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-white">{totalSessions}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Sessions</p>
                 </div>
                 <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-                  <p className="text-2xl font-bold text-gray-900 dark:text-white">
-                    {getSubjectsStudied().length}
-                  </p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    Subject{getSubjectsStudied().length !== 1 ? 's' : ''}
-                  </p>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-white">{getSubjectsStudied().length}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Subject{getSubjectsStudied().length !== 1 ? 's' : ''}</p>
                 </div>
               </div>
             </div>
@@ -376,20 +357,14 @@ export default function ProfilePage() {
 
       <Card>
         <CardHeader>
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-            Level &amp; Experience
-          </h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Level &amp; Experience</h2>
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <Badge variant="info" className="text-sm px-3 py-1">
-                  Level {profile.level}
-                </Badge>
-                <span className="text-2xl font-bold text-gray-900 dark:text-white">
-                  {profile.xp} XP
-                </span>
+                <Badge variant="info" className="text-sm px-3 py-1">Level {profile.level}</Badge>
+                <span className="text-2xl font-bold text-gray-900 dark:text-white">{profile.xp} XP</span>
               </div>
               <span className="text-sm text-gray-500 dark:text-gray-400">
                 {xpProgress} / {xpForNextLevel} XP to next level
@@ -398,21 +373,15 @@ export default function ProfilePage() {
             <Progress value={xpProgress} max={xpForNextLevel} size="lg" />
             <div className="grid grid-cols-3 gap-4 text-center">
               <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-                <p className="text-sm font-medium text-gray-900 dark:text-white">
-                  {formatStudyTime(profile.studyTimeToday)}
-                </p>
+                <p className="text-sm font-medium text-gray-900 dark:text-white">{formatStudyTime(profile.studyTimeToday)}</p>
                 <p className="text-xs text-gray-500 dark:text-gray-400">Today</p>
               </div>
               <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-                <p className="text-sm font-medium text-gray-900 dark:text-white">
-                  {formatStudyTime(profile.studyTimeThisWeek)}
-                </p>
+                <p className="text-sm font-medium text-gray-900 dark:text-white">{formatStudyTime(profile.studyTimeThisWeek)}</p>
                 <p className="text-xs text-gray-500 dark:text-gray-400">This Week</p>
               </div>
               <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-                <p className="text-sm font-medium text-gray-900 dark:text-white">
-                  {formatStudyTime(profile.studyTimeThisMonth)}
-                </p>
+                <p className="text-sm font-medium text-gray-900 dark:text-white">{formatStudyTime(profile.studyTimeThisMonth)}</p>
                 <p className="text-xs text-gray-500 dark:text-gray-400">This Month</p>
               </div>
             </div>
@@ -423,16 +392,12 @@ export default function ProfilePage() {
       {getSubjectsStudied().length > 0 && (
         <Card>
           <CardHeader>
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-              Subjects Studied
-            </h2>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Subjects Studied</h2>
           </CardHeader>
           <CardContent>
             <div className="flex flex-wrap gap-2">
               {getSubjectsStudied().map((name) => (
-                <Badge key={name} variant="info">
-                  {name}
-                </Badge>
+                <Badge key={name} variant="info">{name}</Badge>
               ))}
             </div>
           </CardContent>
@@ -441,9 +406,7 @@ export default function ProfilePage() {
 
       <Card>
         <CardHeader>
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-            Achievements
-          </h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Achievements</h2>
         </CardHeader>
         <CardContent>
           {profile.achievements.length > 0 ? (
@@ -451,48 +414,66 @@ export default function ProfilePage() {
               {profile.achievements.map((achId) => {
                 const ach = ACHIEVEMENTS_MAP[achId];
                 return (
-                  <div
-                    key={achId}
-                    className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg"
-                  >
-                    <span className="text-2xl flex-shrink-0">
-                      {ach?.icon ?? '🎖️'}
-                    </span>
+                  <div key={achId} className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                    <span className="text-2xl flex-shrink-0">{ach?.icon ?? '🎖️'}</span>
                     <div className="min-w-0">
-                      <p className="text-sm font-medium text-gray-900 dark:text-white truncate">
-                        {ach?.title ?? achId}
-                      </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                        {ach?.description ?? 'Achievement'}
-                      </p>
+                      <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{ach?.title ?? achId}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{ach?.description ?? 'Achievement'}</p>
                     </div>
                   </div>
                 );
               })}
             </div>
           ) : (
-            <div className="text-center py-8">
-              <p className="text-gray-400 dark:text-gray-500 text-sm">
-                No achievements yet. Keep studying to unlock them!
-              </p>
-            </div>
+            <p className="text-center py-8 text-gray-400 dark:text-gray-500 text-sm">
+              No achievements yet. Keep studying to unlock them!
+            </p>
           )}
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-            Account
-          </h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Privacy Settings</h2>
+          <p className="text-sm text-gray-500 dark:text-gray-400">Control what others can see on your profile</p>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {privacySettings.map((setting) => (
+              <label key={setting.key} className="flex items-center justify-between cursor-pointer">
+                <div>
+                  <p className="text-sm font-medium text-gray-900 dark:text-white">{setting.label}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">{setting.description}</p>
+                </div>
+                <button
+                  onClick={() => handlePrivacyToggle(setting.key)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    profile.privacy?.[setting.key] !== false ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+                  }`}
+                  role="switch"
+                  aria-checked={profile.privacy?.[setting.key] !== false}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      profile.privacy?.[setting.key] !== false ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </label>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Account</h2>
         </CardHeader>
         <CardContent>
           <Button
             variant="danger"
             onClick={() => {
-              if (window.confirm('Are you sure you want to sign out?')) {
-                signOut();
-              }
+              if (window.confirm('Are you sure you want to sign out?')) signOut();
             }}
           >
             Sign Out

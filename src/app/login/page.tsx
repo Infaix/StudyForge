@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Card, CardContent, CardHeader, Button, Input } from '@/components/ui';
 import { userProfileStorage } from '@/lib/storage';
 import type { UserProfile } from '@/types';
+import { DEFAULT_PRIVACY_SETTINGS } from '@/types';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -35,11 +36,14 @@ export default function LoginPage() {
       }
 
       const now = new Date().toISOString();
+      const userId = `user-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+      const username = email.trim().split('@')[0];
       const profile: UserProfile = {
-        id: 'current-user',
-        username: email.trim().split('@')[0],
-        displayName: email.trim().split('@')[0],
+        id: userId,
+        username,
+        displayName: username,
         avatarUrl: null,
+        bio: '',
         xp: 0,
         level: 1,
         streak: 0,
@@ -52,11 +56,13 @@ export default function LoginPage() {
         friendRequestsSent: [],
         groups: [],
         achievements: [],
+        privacy: { ...DEFAULT_PRIVACY_SETTINGS },
         createdAt: now,
         updatedAt: now,
       };
 
       await userProfileStorage.create(profile);
+      await userProfileStorage.update({ ...profile, id: 'current-user' });
       window.location.href = '/dashboard';
     } catch (err) {
       console.error('Login failed:', err);

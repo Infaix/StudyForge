@@ -3,6 +3,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
+import { NotificationBell } from '@/components/notifications/NotificationBell';
 
 export function Header() {
   const { user, signOut } = useAuth();
@@ -24,6 +25,7 @@ export function Header() {
           </Link>
           {user ? (
             <div className="flex items-center gap-3">
+              <NotificationBell />
               <Link
                 href="/profile"
                 className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition-colors"

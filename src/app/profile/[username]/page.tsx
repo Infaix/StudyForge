@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import {
@@ -8,171 +8,400 @@ import {
   CardContent,
   CardHeader,
   Button,
-  EmptyState,
   Badge,
   Progress,
+  EmptyState,
 } from '@/components/ui';
-import { userProfileStorage } from '@/lib/storage';
+import { userProfileStorage, studySessionStorage, subjectStorage } from '@/lib/storage';
+import { UserProfile, StudySession, Subject } from '@/types';
+import {
+  getFriendshipStatus,
+  sendFriendRequest,
+  acceptFriendRequest,
+  declineFriendRequest,
+  removeFriend,
+  canViewProfile,
+  canViewStats,
+  canViewActivity,
+  canViewSubjects,
+  formatStudyTime,
+  formatTimeAgo,
+  type FriendshipStatus,
+} from '@/lib/social/socialService';
 
-export default function ProfilePage() {
+function generateAvatar(profile: UserProfile) {
+  if (profile.avatarUrl) {
+    return (
+      <img
+        src={profile.avatarUrl}
+        alt={profile.displayName || profile.username}
+        className="w-24 h-24 rounded-full object-cover border-4 border-gray-200 dark:border-gray-700"
+      />
+    );
+  }
+  const name = profile.displayName || profile.username || 'U';
+  const initials = name.split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2);
+  return (
+    <div className="w-24 h-24 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center border-4 border-gray-200 dark:border-gray-700">
+      <span className="text-3xl font-bold text-blue-600 dark:text-blue-300">{initials}</span>
+    </div>
+  );
+}
+
+const ACHIEVEMENTS_MAP: Record<string, { title: string; icon: string; description: string }> = {
+  first_session: { title: 'First Steps', icon: '🎓', description: 'Complete your first study session' },
+  streak_3: { title: 'On Fire', icon: '🔥', description: 'Maintain a 3-day study streak' },
+  streak_7: { title: 'Weekly Warrior', icon: '⚔️', description: 'Maintain a 7-day study streak' },
+  streak_30: { title: 'Monthly Master', icon: '👑', description: 'Maintain a 30-day study streak' },
+  sessions_10: { title: 'Dedicated Learner', icon: '📚', description: 'Complete 10 study sessions' },
+  sessions_50: { title: 'Study Addict', icon: '🧪', description: 'Complete 50 study sessions' },
+  sessions_100: { title: 'Century Club', icon: '💯', description: 'Complete 100 study sessions' },
+  xp_1000: { title: 'XP Collector', icon: '⚡', description: 'Earn 1,000 XP' },
+  xp_5000: { title: 'XP Hunter', icon: '🎯', description: 'Earn 5,000 XP' },
+  xp_10000: { title: 'XP Legend', icon: '🌟', description: 'Earn 10,000 XP' },
+  level_5: { title: 'Rising Star', icon: '⭐', description: 'Reach level 5' },
+  level_10: { title: 'Scholar', icon: '🏅', description: 'Reach level 10' },
+  level_25: { title: 'Grandmaster', icon: '🏆', description: 'Reach level 25' },
+  subjects_3: { title: 'Multidisciplinary', icon: '🎨', description: 'Study 3 different subjects' },
+  subjects_5: { title: 'Polymath', icon: '🧠', description: 'Study 5 different subjects' },
+  time_60: { title: 'Hour of Power', icon: '⏱️', description: 'Study for 60 minutes total' },
+  time_600: { title: 'Ten Hour Titan', icon: '🕐', description: 'Study for 600 minutes total' },
+};
+
+export default function PublicProfilePage() {
   const { username } = useParams<{ username: string }>();
   const { user } = useAuth();
   const router = useRouter();
 
-  if (!username) {
-    router.push('/');
-    return null;
-  }
-
-  const [targetUser, setTargetUser] = useState<any>(null);
+  const [targetUser, setTargetUser] = useState<UserProfile | null>(null);
+  const [friendshipStatus, setFriendshipStatus] = useState<FriendshipStatus>('none');
   const [isLoading, setIsLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [sessions, setSessions] = useState<StudySession[]>([]);
+  const [subjects, setSubjects] = useState<Subject[]>([]);
 
-  useEffect(() => {
-    loadUserProfile();
-  }, [username]);
-
-  const loadUserProfile = async () => {
+  const loadProfile = useCallback(async () => {
     try {
-      const user = await userProfileStorage.getByUsername(username);
-      setTargetUser(user);
-    } catch (error) {
-      console.error('Failed to load user profile:', error);
+      const profile = await userProfileStorage.getByUsername(username);
+      if (!profile) {
+        setIsLoading(false);
+        return;
+      }
+      const migrated = {
+        ...profile,
+        bio: profile.bio ?? '',
+        privacy: profile.privacy ?? { profilePublic: true, showStats: true, showActivity: true, showLeaderboardStats: true, showSubjects: true },
+      };
+      setTargetUser(migrated);
+
+      if (user) {
+        const status = await getFriendshipStatus(user.id, profile.id);
+        setFriendshipStatus(status);
+
+        if (canViewStats(user.id, migrated)) {
+          const allSessions = await studySessionStorage.getAll();
+          const userSessions = allSessions.filter((s) => {
+            try {
+              const profile2 = userProfileStorage.get('current-user');
+              return true;
+            } catch {
+              return false;
+            }
+          });
+          setSessions(allSessions.filter((s) => s.subjectId));
+        }
+
+        if (canViewSubjects(user.id, migrated)) {
+          const allSubjects = await subjectStorage.getAll();
+          setSubjects(allSubjects);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load profile:', err);
     } finally {
       setIsLoading(false);
     }
+  }, [username, user]);
+
+  useEffect(() => {
+    loadProfile();
+  }, [loadProfile]);
+
+  const handleSendRequest = async () => {
+    if (!user || !targetUser) return;
+    setActionLoading(true);
+    try {
+      await sendFriendRequest(user.id, targetUser.id);
+      setFriendshipStatus('pending_outgoing');
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setActionLoading(false);
+    }
   };
 
-  if (isLoading || !targetUser) {
+  const handleAcceptRequest = async () => {
+    if (!user || !targetUser) return;
+    setActionLoading(true);
+    try {
+      const requests = await (await import('@/lib/storage')).friendRequestStorage.getAllByUser(user.id);
+      const pending = requests.find((r) => r.fromUserId === targetUser.id && r.status === 'pending');
+      if (pending) {
+        await acceptFriendRequest(user.id, pending);
+        setFriendshipStatus('friends');
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeclineRequest = async () => {
+    if (!user || !targetUser) return;
+    setActionLoading(true);
+    try {
+      const requests = await (await import('@/lib/storage')).friendRequestStorage.getAllByUser(user.id);
+      const pending = requests.find((r) => r.fromUserId === targetUser.id && r.status === 'pending');
+      if (pending) {
+        await declineFriendRequest(user.id, pending);
+        setFriendshipStatus('none');
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleRemoveFriend = async () => {
+    if (!user || !targetUser) return;
+    if (!window.confirm('Remove this friend?')) return;
+    setActionLoading(true);
+    try {
+      await removeFriend(user.id, targetUser.id);
+      setFriendshipStatus('none');
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const getSubjectsStudied = (): string[] => {
+    const subjectIds = new Set(sessions.map((s) => s.subjectId));
+    return subjects.filter((s) => subjectIds.has(s.id)).map((s) => s.name);
+  };
+
+  const totalSessions = sessions.length;
+
+  if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
-        <div className="bg-white rounded-xl p-8 max-w-md w-full dark:bg-gray-800 shadow-lg">
-          <Card>
-            <CardHeader>
-              <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Loading Profile</h2>
-            </CardHeader>
-            <CardContent>Loading user profile...</CardContent>
-          </Card>
-        </div>
+        <p className="text-gray-500 dark:text-gray-400">Loading profile...</p>
       </div>
     );
   }
 
-  // If viewing own profile, redirect to /profile
-  if (user?.username === username && router) {
+  if (!targetUser) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+        <Card className="max-w-md w-full">
+          <CardContent className="py-12">
+            <EmptyState
+              icon={<span className="text-6xl">👤</span>}
+              title="User not found"
+              description="The profile you are looking for does not exist."
+              action={{
+                label: 'Go Home',
+                onClick: () => router.push('/'),
+              }}
+            />
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (user?.username === username) {
     router.push('/profile');
     return null;
   }
 
-  const isFriends = user?.friends?.includes(targetUser?.id ?? '') ?? false;
-  const hasSentRequest = user?.friendRequestsSent?.includes(targetUser?.id ?? '') ?? false;
-  const hasReceivedRequest = user?.friendRequestsReceived?.includes(targetUser?.id ?? '') ?? false;
+  const isOwner = user?.id === targetUser.id;
+  const showStats = canViewStats(user?.id ?? null, targetUser);
+  const showActivity = canViewActivity(user?.id ?? null, targetUser);
+  const showSubjects = canViewSubjects(user?.id ?? null, targetUser);
+  const isPrivate = !canViewProfile(user?.id ?? null, targetUser);
+
+  if (isPrivate) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+        <Card className="max-w-md w-full">
+          <CardContent className="py-12">
+            <EmptyState
+              icon={<span className="text-6xl">🔒</span>}
+              title="Private Profile"
+              description="This user has made their profile private."
+              action={{
+                label: 'Go Back',
+                onClick: () => router.back(),
+              }}
+            />
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const xpForNextLevel = (targetUser.level || 1) * 100;
+  const xpProgress = targetUser.xp % xpForNextLevel;
 
   return (
-    <Card className="max-w-md">
-      <CardHeader>
-        <div className="flex items-center gap-3">
-          {targetUser.avatarUrl ? (
-            <img
-              src={targetUser.avatarUrl}
-              alt={targetUser.displayName || targetUser.username}
-              className="w-16 h-16 rounded-full object-cover"
-            />
-          ) : (
-            <Badge className="w-10 h-10 rounded-full flex items-center justify-center text-xl">
-              {targetUser.username ? targetUser.username[0].toUpperCase() : 'U'}
-            </Badge>
-          )}
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 py-8">
+      <div className="max-w-2xl mx-auto px-4 space-y-6">
+        <Card>
+          <CardContent className="py-6">
+            <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6">
+              {generateAvatar(targetUser)}
 
-          <div>
-            <h3 className="font-medium text-gray-900 dark:text-white">
-              {targetUser.displayName || targetUser.username}
-            </h3>
-            <p className="text-sm text-gray-500 dark:text-gray-400">
-              {formatStudyTime(targetUser.studyTimeAllTime)} total study
-            </p>
-          </div>
-        </div>
-      </CardHeader>
+              <div className="flex-1 w-full text-center sm:text-left">
+                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+                  {targetUser.displayName || targetUser.username}
+                </h1>
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  @{targetUser.username}
+                </p>
+                {targetUser.bio && (
+                  <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                    {targetUser.bio}
+                  </p>
+                )}
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                  Joined {new Date(targetUser.createdAt).toLocaleDateString()}
+                </p>
 
-      <CardContent>
-        {targetUser ? (
-          <div className="space-y-4">
-            <div>
-              <p className="text-sm text-gray-500 dark:text-gray-400">Study streak</p>
-              <p className="text-2xl font-bold text-gray-900 dark:text-white">
-                {targetUser.streak} {targetUser.streak === 1 ? 'day' : 'days'}
-              </p>
-            </div>
-
-            <div>
-              <p className="text-sm text-gray-500 dark:text-gray-400">XP</p>
-              <p className="text-2xl font-bold text-gray-900 dark:text-white">
-                {targetUser.xp} XP
-              </p>
-            </div>
-
-            <div>
-              <p className="text-sm text-gray-500 dark:text-gray-400">Level</p>
-              <p className="text-2xl font-bold text-gray-900 dark:text-white">Level {targetUser.level}</p>
-            </div>
-
-            <div>
-              <p className="text-sm text-gray-500 dark:text-gray-400">Study time this week</p>
-              <p className="text-lg text-gray-900 dark:text-white">
-                {formatStudyTime(targetUser.studyTimeThisWeek)}
-              </p>
-            </div>
-
-            {user && user.id !== targetUser.id && (
-              <div>
-                {hasSentRequest ? (
-                  <Button variant="ghost" size="sm">Request Sent</Button>
-                ) : hasReceivedRequest ? (
-                  <Button variant="ghost" size="sm">Accept Request</Button>
-                ) : isFriends ? (
-                  <Button variant="secondary" size="sm">Friends</Button>
-                ) : (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={async () => {
-                      // Send friend request
-                      const { friendRequestStorage } = await import('@/lib/storage');
-                      const request: any = {
-                        id: 'req-' + Date.now(),
-                        fromUserId: user?.id ?? '',
-                        toUserId: targetUser.id,
-                        message: null,
-                        createdAt: new Date().toISOString(),
-                        status: 'pending',
-                      };
-                      await friendRequestStorage.create(request);
-                      // Show feedback
-                      alert('Friend request sent!');
-                    }}
-                  >
-                    Add Friend
-                  </Button>
+                {user && !isOwner && (
+                  <div className="mt-4">
+                    {friendshipStatus === 'friends' ? (
+                      <Button variant="secondary" size="sm" onClick={handleRemoveFriend} disabled={actionLoading}>
+                        {actionLoading ? 'Removing...' : 'Friends ✓'}
+                      </Button>
+                    ) : friendshipStatus === 'pending_outgoing' ? (
+                      <Badge variant="warning">Request Sent</Badge>
+                    ) : friendshipStatus === 'pending_incoming' ? (
+                      <div className="flex gap-2">
+                        <Button variant="primary" size="sm" onClick={handleAcceptRequest} disabled={actionLoading}>
+                          Accept Request
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={handleDeclineRequest} disabled={actionLoading}>
+                          Decline
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button variant="primary" size="sm" onClick={handleSendRequest} disabled={actionLoading}>
+                        {actionLoading ? 'Sending...' : 'Add Friend'}
+                      </Button>
+                    )}
+                  </div>
                 )}
               </div>
-            )}
-          </div>
-        ) : (
-          <EmptyState
-            icon={<span className="text-6xl">👤</span>}
-            title="User not found"
-            description="The profile you are looking for does not exist."
-          />
-        )}
-      </CardContent>
-    </Card>
-  );
-}
+            </div>
+          </CardContent>
+        </Card>
 
-function formatStudyTime(minutes: number): string {
-  const hours = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  if (hours === 0) return `${mins}m`;
-  if (mins === 0) return `${hours}h`;
-  return `${hours}h ${mins}m`;
+        {showStats && (
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Statistics</h2>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                  <p className="text-2xl font-bold text-gray-900 dark:text-white">{targetUser.streak}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Day{targetUser.streak !== 1 ? 's' : ''} Streak</p>
+                </div>
+                <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                  <p className="text-2xl font-bold text-gray-900 dark:text-white">{formatStudyTime(targetUser.studyTimeAllTime)}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Total Study</p>
+                </div>
+                <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                  <p className="text-2xl font-bold text-gray-900 dark:text-white">{totalSessions}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Sessions</p>
+                </div>
+                <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                  <p className="text-2xl font-bold text-gray-900 dark:text-white">{getSubjectsStudied().length}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Subject{getSubjectsStudied().length !== 1 ? 's' : ''}</p>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <div className="flex items-center justify-between mb-1">
+                  <Badge variant="info" className="text-sm">Level {targetUser.level}</Badge>
+                  <span className="text-sm text-gray-500 dark:text-gray-400">
+                    {xpProgress} / {xpForNextLevel} XP
+                  </span>
+                </div>
+                <Progress value={xpProgress} max={xpForNextLevel} size="sm" />
+                <p className="text-lg font-bold text-gray-900 dark:text-white mt-2">
+                  {targetUser.xp.toLocaleString()} XP
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {showSubjects && getSubjectsStudied().length > 0 && (
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Subjects Studied</h2>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-wrap gap-2">
+                {getSubjectsStudied().map((name) => (
+                  <Badge key={name} variant="info">{name}</Badge>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {targetUser.achievements && targetUser.achievements.length > 0 && (
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Achievements</h2>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {targetUser.achievements.map((achId) => {
+                  const ach = ACHIEVEMENTS_MAP[achId];
+                  return (
+                    <div key={achId} className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                      <span className="text-2xl flex-shrink-0">{ach?.icon ?? '🎖️'}</span>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-gray-900 dark:text-white truncate">
+                          {ach?.title ?? achId}
+                        </p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                          {ach?.description ?? 'Achievement'}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {!showStats && (
+          <Card>
+            <CardContent className="py-8 text-center">
+              <p className="text-gray-500 dark:text-gray-400">This user has hidden their statistics.</p>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
 }

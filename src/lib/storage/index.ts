@@ -26,7 +26,7 @@ const STORES: StoreConfig[] = [
   { name: 'groups', keyPath: 'id', indexes: [{ name: 'administratorId', keyPath: 'administratorId' }] },
   { name: 'groupMembers', keyPath: 'id', indexes: [{ name: 'groupId', keyPath: 'groupId' }, { name: 'userId', keyPath: 'userId' }] },
   { name: 'groupInvites', keyPath: 'id', indexes: [{ name: 'groupId', keyPath: 'groupId' }, { name: 'toUserId', keyPath: 'toUserId' }] },
-  { name: 'studyActivities', keyPath: 'id' },
+  { name: 'studyActivities', keyPath: 'id', indexes: [{ name: 'userId', keyPath: 'userId' }] },
   { name: 'xpTransactions', keyPath: 'id' },
   { name: 'achievements', keyPath: 'id' },
   { name: 'userAchievements', keyPath: 'id', indexes: [{ name: 'userId', keyPath: 'userId' }, { name: 'achievementId', keyPath: 'achievementId' }] },

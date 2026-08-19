@@ -1,31 +1,19 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
-import { Card, CardContent, CardHeader, Button, Badge, Progress } from '@/components/ui';
-import { userProfileStorage, studySessionStorage, xpTransactionStorage } from '@/lib/storage';
-import { UserProfile, StudySession, XpTransaction } from '@/types';
-
-type LeaderboardFilter = 'all-time' | 'this-week' | 'this-month';
-
-interface LeaderboardEntry {
-  rank: number;
-  profile: UserProfile;
-  xp: number;
-  studyTime: number;
-  streak: number;
-  isCurrentUser: boolean;
-}
-
-function formatStudyTime(minutes: number): string {
-  const hours = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  if (hours === 0) return `${mins}m`;
-  if (mins === 0) return `${hours}h`;
-  return `${hours}h ${mins}m`;
-}
+import { Card, CardContent, Button, Badge, Progress } from '@/components/ui';
+import { userProfileStorage } from '@/lib/storage';
+import {
+  computeLeaderboard,
+  getFriends,
+  formatStudyTime,
+  type LeaderboardEntry,
+  type LeaderboardCategory,
+  type LeaderboardPeriod,
+} from '@/lib/social/socialService';
 
 function getRankDisplay(rank: number): string {
   if (rank === 1) return '🥇';
@@ -34,107 +22,58 @@ function getRankDisplay(rank: number): string {
   return `#${rank}`;
 }
 
-function getRankBadgeVariant(rank: number): 'warning' | 'default' | 'info' {
-  if (rank === 1) return 'warning';
-  if (rank === 2) return 'default';
-  if (rank === 3) return 'info';
-  return 'default';
-}
-
 export default function LeaderboardPage() {
   const { user } = useAuth();
   const router = useRouter();
 
-  if (!user) {
-    router.push('/login');
-    return null;
-  }
-
-  const [filter, setFilter] = useState<LeaderboardFilter>('all-time');
+  const [mounted, setMounted] = useState(false);
+  const [period, setPeriod] = useState<LeaderboardPeriod>('all-time');
+  const [category, setCategory] = useState<LeaderboardCategory>('xp');
+  const [showFriendsOnly, setShowFriendsOnly] = useState(false);
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [mounted, setMounted] = useState(false);
+  const [friendIds, setFriendIds] = useState<string[]>([]);
+
+  useEffect(() => { setMounted(true); }, []);
 
   useEffect(() => {
-    setMounted(true);
-  }, []);
+    if (mounted && !user) router.push('/login');
+  }, [mounted, user, router]);
 
   useEffect(() => {
-    if (!mounted || !user) return;
+    if (!user) return;
+    getFriends(user.id).then((friends) => {
+      setFriendIds(friends.map((f) => f.id));
+    });
+  }, [user]);
 
-    const loadLeaderboard = async () => {
-      setIsLoading(true);
+  const loadLeaderboard = useCallback(async () => {
+    if (!user) return;
+    setIsLoading(true);
+    try {
+      const result = await computeLeaderboard(
+        period,
+        category,
+        user.id,
+        showFriendsOnly && friendIds.length > 0 ? friendIds : undefined
+      );
+      setEntries(result);
+    } catch (err) {
+      console.error('Failed to load leaderboard:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [period, category, showFriendsOnly, friendIds, user]);
 
-      try {
-        const allProfiles = await userProfileStorage.getAll();
-        const allSessions = await studySessionStorage.getAll();
-        const allTransactions = await xpTransactionStorage.getAll();
+  useEffect(() => {
+    if (mounted && user) loadLeaderboard();
+  }, [loadLeaderboard, mounted, user]);
 
-        const now = new Date();
-
-        const weekStart = new Date(now);
-        weekStart.setDate(weekStart.getDate() - 7);
-        weekStart.setHours(0, 0, 0, 0);
-
-        const monthStart = new Date(now);
-        monthStart.setMonth(monthStart.getMonth() - 1);
-        monthStart.setHours(0, 0, 0, 0);
-
-        const computed: LeaderboardEntry[] = allProfiles.map((profile) => {
-          let xp = profile.xp;
-          let studyTime = profile.studyTimeAllTime;
-
-          if (filter === 'this-week') {
-            const userTransactions = allTransactions.filter(
-              (t: XpTransaction) => t.userId === profile.id && new Date(t.createdAt) >= weekStart
-            );
-            xp = userTransactions.reduce((sum: number, t: XpTransaction) => sum + t.amount, 0);
-
-            const userSessions = allSessions.filter(
-              (s: StudySession) => new Date(s.startTime) >= weekStart
-            );
-            studyTime = userSessions.reduce((sum: number, s: StudySession) => sum + s.duration, 0);
-          } else if (filter === 'this-month') {
-            const userTransactions = allTransactions.filter(
-              (t: XpTransaction) => t.userId === profile.id && new Date(t.createdAt) >= monthStart
-            );
-            xp = userTransactions.reduce((sum: number, t: XpTransaction) => sum + t.amount, 0);
-
-            const userSessions = allSessions.filter(
-              (s: StudySession) => new Date(s.startTime) >= monthStart
-            );
-            studyTime = userSessions.reduce((sum: number, s: StudySession) => sum + s.duration, 0);
-          }
-
-          return {
-            rank: 0,
-            profile,
-            xp,
-            studyTime,
-            streak: profile.streak,
-            isCurrentUser: profile.id === user.id,
-          };
-        });
-
-        computed.sort((a, b) => b.xp - a.xp);
-
-        const ranked = computed.map((entry, index) => ({
-          ...entry,
-          rank: index + 1,
-        }));
-
-        setEntries(ranked);
-      } catch (err) {
-        console.error('Failed to load leaderboard:', err);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadLeaderboard();
-  }, [filter, mounted, user]);
-
-  const maxXP = entries.length > 0 ? Math.max(...entries.map((e) => e.xp), 1) : 1;
+  const maxXP = entries.length > 0 ? Math.max(...entries.map((e) => {
+    if (category === 'xp') return e.xp;
+    if (category === 'studyTime') return e.studyTime;
+    return e.streak;
+  }), 1) : 1;
 
   if (!mounted) {
     return (
@@ -150,46 +89,85 @@ export default function LeaderboardPage() {
     <DashboardLayout>
       <div className="max-w-4xl mx-auto space-y-6">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-            Leaderboard
-          </h1>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Leaderboard</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
             See how you rank among other learners
           </p>
         </div>
 
-        <div className="flex gap-2">
-          {(['all-time', 'this-week', 'this-month'] as LeaderboardFilter[]).map((f) => (
-            <Button
-              key={f}
-              variant={filter === f ? 'primary' : 'ghost'}
-              size="sm"
-              onClick={() => setFilter(f)}
+        <div className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            {(['all-time', 'this-week', 'this-month'] as LeaderboardPeriod[]).map((p) => (
+              <Button
+                key={p}
+                variant={period === p ? 'primary' : 'ghost'}
+                size="sm"
+                onClick={() => setPeriod(p)}
+              >
+                {p === 'all-time' ? 'All Time' : p === 'this-week' ? 'This Week' : 'This Month'}
+              </Button>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {(['xp', 'studyTime', 'streak'] as LeaderboardCategory[]).map((c) => (
+              <Button
+                key={c}
+                variant={category === c ? 'primary' : 'ghost'}
+                size="sm"
+                onClick={() => setCategory(c)}
+              >
+                {c === 'xp' ? 'XP' : c === 'studyTime' ? 'Study Time' : 'Streak'}
+              </Button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowFriendsOnly(!showFriendsOnly)}
+              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                showFriendsOnly
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+              }`}
             >
-              {f === 'all-time' ? 'All Time' : f === 'this-week' ? 'This Week' : 'This Month'}
-            </Button>
-          ))}
+              👥 Friends Only
+            </button>
+          </div>
         </div>
 
         {isLoading ? (
-          <Card>
-            <CardContent className="py-12">
-              <div className="text-center text-gray-500 dark:text-gray-400">
-                Loading leaderboard...
+          <div className="space-y-3">
+            {[1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="animate-pulse flex items-center gap-4 p-4 rounded-xl bg-white dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700">
+                <div className="w-12 h-8 bg-gray-200 dark:bg-gray-700 rounded" />
+                <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-700" />
+                <div className="flex-1">
+                  <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-32 mb-1" />
+                  <div className="h-3 bg-gray-200 dark:bg-gray-700 rounded w-20" />
+                </div>
+                <div className="h-6 bg-gray-200 dark:bg-gray-700 rounded w-20" />
               </div>
-            </CardContent>
-          </Card>
+            ))}
+          </div>
         ) : entries.length === 0 ? (
           <Card>
             <CardContent className="py-12">
               <div className="text-center space-y-3">
                 <div className="text-4xl">🏆</div>
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-                  No data yet
+                  {showFriendsOnly ? 'No friends to rank' : 'No data yet'}
                 </h3>
                 <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Start studying to appear on the leaderboard.
+                  {showFriendsOnly
+                    ? 'Add some friends to see how you compare.'
+                    : 'Start studying to appear on the leaderboard.'}
                 </p>
+                {showFriendsOnly && (
+                  <Button variant="primary" size="sm" onClick={() => router.push('/friends')}>
+                    Find Friends
+                  </Button>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -197,6 +175,8 @@ export default function LeaderboardPage() {
           <div className="space-y-3">
             {entries.map((entry) => {
               const isTop3 = entry.rank <= 3;
+              const value = category === 'xp' ? entry.xp : category === 'studyTime' ? entry.studyTime : entry.streak;
+
               const rankBg =
                 entry.rank === 1
                   ? 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800'
@@ -227,13 +207,13 @@ export default function LeaderboardPage() {
                         {entry.profile.avatarUrl ? (
                           <img
                             src={entry.profile.avatarUrl}
-                            alt={entry.profile.displayName}
+                            alt={entry.profile.displayName || entry.profile.username}
                             className="w-10 h-10 rounded-full object-cover"
                           />
                         ) : (
                           <div className="w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center">
                             <span className="text-sm font-semibold text-blue-600 dark:text-blue-300">
-                              {entry.profile.displayName.charAt(0).toUpperCase()}
+                              {(entry.profile.displayName || entry.profile.username || 'U').charAt(0).toUpperCase()}
                             </span>
                           </div>
                         )}
@@ -241,24 +221,27 @@ export default function LeaderboardPage() {
 
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="font-semibold text-gray-900 dark:text-white truncate">
-                            {entry.profile.displayName}
+                          <span
+                            className="font-semibold text-gray-900 dark:text-white truncate cursor-pointer hover:underline"
+                            onClick={() => router.push(`/profile/${entry.profile.username}`)}
+                          >
+                            {entry.profile.displayName || entry.profile.username}
                           </span>
-                          {entry.isCurrentUser && (
-                            <Badge variant="info">You</Badge>
-                          )}
+                          {entry.isCurrentUser && <Badge variant="info">You</Badge>}
                         </div>
                         <div className="text-sm text-gray-500 dark:text-gray-400">
-                          Level {entry.profile.level}
+                          @{entry.profile.username} · Level {entry.profile.level}
                         </div>
                       </div>
 
                       <div className="hidden sm:block flex-1 px-4">
                         <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">
-                          {entry.xp.toLocaleString()} XP
+                          {category === 'xp' && `${value.toLocaleString()} XP`}
+                          {category === 'studyTime' && formatStudyTime(value)}
+                          {category === 'streak' && `${value} days`}
                         </div>
                         <Progress
-                          value={entry.xp}
+                          value={value}
                           max={maxXP}
                           size="sm"
                         />
@@ -266,11 +249,14 @@ export default function LeaderboardPage() {
 
                       <div className="flex-shrink-0 text-right space-y-1">
                         <div className="text-lg font-bold text-gray-900 dark:text-white">
-                          {entry.xp.toLocaleString()} XP
+                          {category === 'xp' && `${value.toLocaleString()} XP`}
+                          {category === 'studyTime' && formatStudyTime(value)}
+                          {category === 'streak' && `${value}d`}
                         </div>
                         <div className="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
-                          <span>⏱ {formatStudyTime(entry.studyTime)}</span>
-                          <span>🔥 {entry.streak}d</span>
+                          {category !== 'xp' && <span>⚡ {entry.xp.toLocaleString()} XP</span>}
+                          {category !== 'studyTime' && <span>⏱ {formatStudyTime(entry.studyTime)}</span>}
+                          {category !== 'streak' && <span>🔥 {entry.streak}d</span>}
                         </div>
                       </div>
                     </div>
