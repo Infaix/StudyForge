@@ -255,23 +255,39 @@ export async function getReceivedRequests(
   userId: string
 ): Promise<(FriendRequest & { fromProfile?: UserProfile | null })[]> {
   try {
-    const profile = await getProfileById(userId);
-    if (!profile) return [];
-    const incomingIds = profile.friendRequestsReceived || [];
-    const requests: (FriendRequest & { fromProfile?: UserProfile | null })[] = [];
-    for (const fromId of incomingIds) {
-      const fromProfile = await getProfileById(fromId);
-      requests.push({
-        id: `fr-${fromId}-${userId}`,
-        fromUserId: fromId,
-        toUserId: userId,
-        message: null,
-        status: 'pending',
+    const data = await api<{ incoming: Array<Record<string, unknown>> }>(
+      '/api/social/friend-requests?direction=incoming'
+    );
+    return data.incoming.map((r) => ({
+      id: r.id as string,
+      fromUserId: r.fromUserId as string,
+      toUserId: r.toUserId as string,
+      message: (r.message as string) || null,
+      status: 'pending' as const,
+      createdAt: r.createdAt as string,
+      fromProfile: r.fromProfile ? {
+        id: (r.fromProfile as Record<string, unknown>).id as string,
+        username: (r.fromProfile as Record<string, unknown>).username as string,
+        displayName: ((r.fromProfile as Record<string, unknown>).displayName as string) || '',
+        avatarUrl: (r.fromProfile as Record<string, unknown>).avatarUrl as string | null,
+        bio: '',
+        xp: ((r.fromProfile as Record<string, unknown>).xp as number) || 0,
+        level: ((r.fromProfile as Record<string, unknown>).level as number) || 1,
+        streak: 0,
+        studyTimeToday: 0,
+        studyTimeThisWeek: 0,
+        studyTimeThisMonth: 0,
+        studyTimeAllTime: 0,
+        friends: [],
+        friendRequestsReceived: [],
+        friendRequestsSent: [],
+        groups: [],
+        achievements: [],
+        privacy: DEFAULT_PRIVACY_SETTINGS,
         createdAt: '',
-        fromProfile,
-      });
-    }
-    return requests;
+        updatedAt: '',
+      } as UserProfile : null,
+    }));
   } catch {
     return [];
   }
@@ -281,23 +297,39 @@ export async function getSentRequests(
   userId: string
 ): Promise<(FriendRequest & { toProfile?: UserProfile | null })[]> {
   try {
-    const profile = await getProfileById(userId);
-    if (!profile) return [];
-    const outgoingIds = profile.friendRequestsSent || [];
-    const requests: (FriendRequest & { toProfile?: UserProfile | null })[] = [];
-    for (const toId of outgoingIds) {
-      const toProfile = await getProfileById(toId);
-      requests.push({
-        id: `fr-${userId}-${toId}`,
-        fromUserId: userId,
-        toUserId: toId,
-        message: null,
-        status: 'pending',
+    const data = await api<{ outgoing: Array<Record<string, unknown>> }>(
+      '/api/social/friend-requests?direction=outgoing'
+    );
+    return data.outgoing.map((r) => ({
+      id: r.id as string,
+      fromUserId: r.fromUserId as string,
+      toUserId: r.toUserId as string,
+      message: (r.message as string) || null,
+      status: 'pending' as const,
+      createdAt: r.createdAt as string,
+      toProfile: r.toProfile ? {
+        id: (r.toProfile as Record<string, unknown>).id as string,
+        username: (r.toProfile as Record<string, unknown>).username as string,
+        displayName: ((r.toProfile as Record<string, unknown>).displayName as string) || '',
+        avatarUrl: (r.toProfile as Record<string, unknown>).avatarUrl as string | null,
+        bio: '',
+        xp: ((r.toProfile as Record<string, unknown>).xp as number) || 0,
+        level: ((r.toProfile as Record<string, unknown>).level as number) || 1,
+        streak: 0,
+        studyTimeToday: 0,
+        studyTimeThisWeek: 0,
+        studyTimeThisMonth: 0,
+        studyTimeAllTime: 0,
+        friends: [],
+        friendRequestsReceived: [],
+        friendRequestsSent: [],
+        groups: [],
+        achievements: [],
+        privacy: DEFAULT_PRIVACY_SETTINGS,
         createdAt: '',
-        toProfile,
-      });
-    }
-    return requests;
+        updatedAt: '',
+      } as UserProfile : null,
+    }));
   } catch {
     return [];
   }

@@ -10,77 +10,61 @@ export async function GET(request: NextRequest) {
     const period = searchParams.get('period') || 'all-time';
     const friendsOnly = searchParams.get('friends') === 'true';
 
+    const timeBindings: unknown[] = [];
     let timeCondition = '';
     if (period === 'this-week') {
-      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-      timeCondition = `AND ss.start_time >= '${weekAgo}'`;
+      timeCondition = 'AND ss.start_time >= ?';
+      timeBindings.push(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
     } else if (period === 'this-month') {
-      const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-      timeCondition = `AND ss.start_time >= '${monthAgo}'`;
+      timeCondition = 'AND ss.start_time >= ?';
+      timeBindings.push(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
     }
 
     let leaderboard: Array<Record<string, unknown>> = [];
 
     if (category === 'xp') {
-      let sql = `
+      const sql = `
         SELECT u.id, u.username, p.display_name, p.avatar_url, p.xp, p.level, p.streak,
                p.study_time_all_time as study_time, p.privacy_show_leaderboard_stats
         FROM user_profiles p
         JOIN users u ON u.id = p.user_id
-        WHERE 1=1
+        WHERE 1=1${friendsOnly && userId ? ' AND (p.user_id IN (SELECT CASE WHEN user_id_1 = ? THEN user_id_2 ELSE user_id_1 END FROM friendships WHERE user_id_1 = ? OR user_id_2 = ?) OR p.user_id = ?)' : ''}
+        ORDER BY p.xp DESC LIMIT 50
       `;
-      if (friendsOnly && userId) {
-        sql += ` AND (p.user_id IN (
-          SELECT CASE WHEN user_id_1 = ? THEN user_id_2 ELSE user_id_1 END
-          FROM friendships WHERE user_id_1 = ? OR user_id_2 = ?
-        ) OR p.user_id = ?)`;
-        const { results } = await db.prepare(sql + ' ORDER BY p.xp DESC LIMIT 50').bind(userId, userId, userId, userId).all();
-        leaderboard = results;
-      } else {
-        const { results } = await db.prepare(sql + ' ORDER BY p.xp DESC LIMIT 50').all();
-        leaderboard = results;
-      }
+      const bindings = friendsOnly && userId ? [userId, userId, userId, userId] : [];
+      const { results } = await db.prepare(sql).bind(...bindings).all();
+      leaderboard = results;
     } else if (category === 'studyTime') {
-      let sql = `
+      const friendsJoin = friendsOnly && userId
+        ? ' AND (p.user_id IN (SELECT CASE WHEN user_id_1 = ? THEN user_id_2 ELSE user_id_1 END FROM friendships WHERE user_id_1 = ? OR user_id_2 = ?) OR p.user_id = ?)'
+        : '';
+      const friendsBindings = friendsOnly && userId ? [userId, userId, userId, userId] : [];
+
+      const sql = `
         SELECT u.id, u.username, p.display_name, p.avatar_url, p.xp, p.level, p.streak,
                COALESCE(SUM(ss.duration), 0) as study_time, p.privacy_show_leaderboard_stats
         FROM user_profiles p
         JOIN users u ON u.id = p.user_id
         LEFT JOIN study_sessions ss ON ss.user_id = p.user_id ${timeCondition}
-        WHERE 1=1
+        WHERE 1=1${friendsJoin}
+        GROUP BY p.user_id
+        ORDER BY study_time DESC LIMIT 50
       `;
-      if (friendsOnly && userId) {
-        sql += ` AND (p.user_id IN (
-          SELECT CASE WHEN user_id_1 = ? THEN user_id_2 ELSE user_id_1 END
-          FROM friendships WHERE user_id_1 = ? OR user_id_2 = ?
-        ) OR p.user_id = ?)`;
-        sql += ' GROUP BY p.user_id ORDER BY study_time DESC LIMIT 50';
-        const { results } = await db.prepare(sql).bind(userId, userId, userId, userId).all();
-        leaderboard = results;
-      } else {
-        sql += ' GROUP BY p.user_id ORDER BY study_time DESC LIMIT 50';
-        const { results } = await db.prepare(sql).all();
-        leaderboard = results;
-      }
+      const bindings = [...timeBindings, ...friendsBindings];
+      const { results } = await db.prepare(sql).bind(...bindings).all();
+      leaderboard = results;
     } else if (category === 'streak') {
-      let sql = `
+      const sql = `
         SELECT u.id, u.username, p.display_name, p.avatar_url, p.xp, p.level, p.streak,
                p.study_time_all_time as study_time, p.privacy_show_leaderboard_stats
         FROM user_profiles p
         JOIN users u ON u.id = p.user_id
-        WHERE 1=1
+        WHERE 1=1${friendsOnly && userId ? ' AND (p.user_id IN (SELECT CASE WHEN user_id_1 = ? THEN user_id_2 ELSE user_id_1 END FROM friendships WHERE user_id_1 = ? OR user_id_2 = ?) OR p.user_id = ?)' : ''}
+        ORDER BY p.streak DESC LIMIT 50
       `;
-      if (friendsOnly && userId) {
-        sql += ` AND (p.user_id IN (
-          SELECT CASE WHEN user_id_1 = ? THEN user_id_2 ELSE user_id_1 END
-          FROM friendships WHERE user_id_1 = ? OR user_id_2 = ?
-        ) OR p.user_id = ?)`;
-        const { results } = await db.prepare(sql + ' ORDER BY p.streak DESC LIMIT 50').bind(userId, userId, userId, userId).all();
-        leaderboard = results;
-      } else {
-        const { results } = await db.prepare(sql + ' ORDER BY p.streak DESC LIMIT 50').all();
-        leaderboard = results;
-      }
+      const bindings = friendsOnly && userId ? [userId, userId, userId, userId] : [];
+      const { results } = await db.prepare(sql).bind(...bindings).all();
+      leaderboard = results;
     }
 
     const entries = leaderboard

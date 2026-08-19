@@ -29,6 +29,37 @@ export async function GET(request: NextRequest) {
   }
 }
 
+export async function POST(request: NextRequest) {
+  try {
+    const db = getDB();
+    const userId = request.headers.get('x-user-id');
+    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+    const body = await request.json();
+
+    const id = body.id || crypto.randomUUID();
+    const type = body.type;
+    const title = body.title;
+    const message = body.message;
+    const read = body.read ? 1 : 0;
+    const relatedId = body.relatedId || null;
+    const createdAt = body.createdAt || new Date().toISOString();
+
+    if (!type || !title || !message) {
+      return NextResponse.json({ error: 'type, title, and message are required' }, { status: 400 });
+    }
+
+    await db.prepare(
+      'INSERT INTO notifications (id, user_id, type, title, message, read, related_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(id, userId, type, title, message, read, relatedId, createdAt).run();
+
+    return NextResponse.json({ id }, { status: 201 });
+  } catch (error) {
+    console.error('Notifications POST error:', error);
+    return NextResponse.json({ error: 'Failed' }, { status: 500 });
+  }
+}
+
 export async function PUT(request: NextRequest) {
   try {
     const db = getDB();

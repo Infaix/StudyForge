@@ -82,7 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_assessments_subject_id ON assessments(subject_id)
 CREATE TABLE IF NOT EXISTS study_sessions (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  subject_id TEXT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+  subject_id TEXT REFERENCES subjects(id) ON DELETE SET NULL,
   topic_id TEXT,
   duration INTEGER NOT NULL,
   start_time TEXT NOT NULL,
@@ -190,7 +190,7 @@ CREATE INDEX IF NOT EXISTS idx_quiz_results_quiz_id ON quiz_results(quiz_id);
 -- User Settings
 CREATE TABLE IF NOT EXISTS user_settings (
   id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
   theme TEXT NOT NULL DEFAULT 'system',
   study_goal_minutes INTEGER DEFAULT 60,
   notification_enabled INTEGER DEFAULT 1,
@@ -199,7 +199,7 @@ CREATE TABLE IF NOT EXISTS user_settings (
   updated_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_user_settings_user_id ON user_settings(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_settings_user_id ON user_settings(user_id);
 
 -- Notes
 CREATE TABLE IF NOT EXISTS notes (

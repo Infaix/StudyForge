@@ -21,6 +21,17 @@ export async function GET(request: NextRequest) {
       LIMIT 20
     `).bind(`%${query}%`, `%${query}%`, userId || '').all();
 
+    let friendshipIds: string[] = [];
+    if (userId) {
+      const { results: friendResults } = await db.prepare(`
+        SELECT CASE WHEN user_id_1 = ? THEN user_id_2 ELSE user_id_1 END as friend_id
+        FROM friendships WHERE user_id_1 = ? OR user_id_2 = ?
+      `).bind(userId, userId, userId).all();
+      friendshipIds = friendResults.map((r) => (r as Record<string, string>).friend_id);
+    }
+
+    const friendSet = new Set(friendshipIds);
+
     return NextResponse.json(results.map((r) => ({
       id: r.id,
       username: r.username,
@@ -29,6 +40,7 @@ export async function GET(request: NextRequest) {
       bio: r.bio || '',
       xp: r.xp || 0,
       level: r.level || 1,
+      status: friendSet.has(r.id as string) ? 'friends' : 'none',
     })));
   } catch (error) {
     console.error('Search error:', error);

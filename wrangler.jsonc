@@ -8,6 +8,14 @@
     "directory": ".open-next/assets",
     "binding": "ASSETS"
   },
+  // Setup:
+  // 1. npx wrangler d1 create studyforge-db
+  // 2. Paste DATABASE_ID into the first d1_databases entry
+  // 3. npx wrangler d1 create studyforge-tag-cache
+  // 4. Paste DATABASE_ID into the second d1_databases entry
+  // 5. npx wrangler d1 execute studyforge-db --remote --file=migrations/0001_init.sql
+  // 6. npx wrangler secret put JWT_SECRET --env production
+  // 7. npm run build && npx wrangler deploy
   "d1_databases": [
     {
       "binding": "DATABASE",

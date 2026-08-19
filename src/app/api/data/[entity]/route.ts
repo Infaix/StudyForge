@@ -1,14 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDB, ENTITIES, toCamelCase, toSnakeCase, serializeJsonFields, deserializeJsonFields, FILTER_ALIASES } from '@/lib/db';
 
+const MUTATION_BLOCKED = new Set(['achievements', 'friend-requests', 'group-members', 'group-invites']);
+
 export async function GET(request: NextRequest, { params }: { params: Promise<{ entity: string }> }) {
   const { entity } = await params;
   const config = ENTITIES[entity];
   if (!config) return NextResponse.json({ error: `Unknown entity: ${entity}` }, { status: 404 });
 
+  const userId = request.headers.get('x-user-id');
+  if (!userId && config.hasUserId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   try {
     const db = getDB();
-    const userId = request.headers.get('x-user-id');
     const { searchParams } = new URL(request.url);
 
     let sql = `SELECT * FROM ${config.table}`;
@@ -32,7 +38,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const limit = searchParams.get('limit');
     if (limit) {
-      sql += ` LIMIT ${parseInt(limit)}`;
+      const n = parseInt(limit);
+      if (!isNaN(n) && n > 0 && n <= 100) sql += ` LIMIT ${n}`;
     }
 
     const stmt = bindings.length ? db.prepare(sql).bind(...bindings) : db.prepare(sql);
@@ -56,15 +63,25 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const config = ENTITIES[entity];
   if (!config) return NextResponse.json({ error: `Unknown entity: ${entity}` }, { status: 404 });
 
+  if (MUTATION_BLOCKED.has(entity)) {
+    return NextResponse.json({ error: 'Entity is read-only via this endpoint' }, { status: 403 });
+  }
+
+  const userId = request.headers.get('x-user-id');
+  if (!userId && config.hasUserId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   try {
     const db = getDB();
-    const userId = request.headers.get('x-user-id');
     const body = await request.json();
 
-    if (!body.id) body.id = crypto.randomUUID();
-    if (config.hasUserId && userId) body.userId = userId;
+    const id = body.id || crypto.randomUUID();
 
-    let snakeData = toSnakeCase(body, config.columns);
+    const record: Record<string, unknown> = { ...body, id };
+    if (config.hasUserId && userId) record.userId = userId;
+
+    let snakeData = toSnakeCase(record, config.columns);
     if (config.jsonFields) snakeData = serializeJsonFields(snakeData, config.jsonFields);
 
     const keys = Object.keys(snakeData);
