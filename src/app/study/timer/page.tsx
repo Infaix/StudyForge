@@ -162,6 +162,7 @@ export default function StudyTimer() {
       const now = new Date().toISOString();
       const startTime = new Date(Date.now() - durationSeconds * 1000).toISOString();
       const minutes = Math.floor(durationSeconds / 60);
+      const startedAt = now; // Initialize startedAt
 
       // First, persist the study session to D1
       await studySessionStorage.create({
@@ -176,25 +177,26 @@ export default function StudyTimer() {
 
       // Then, call the server to validate and award XP atomically
       try {
-        const completionResponse = await fetch('/api/study/sessions/complete', {
+        const submissionResponse = await fetch('/api/study/submit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
           body: JSON.stringify({
-            duration: durationSeconds,
-            subjectId: selectedSubject,
+            durationSeconds: durationSeconds,
+            subjectId: selectedSubject ? selectedSubject : undefined,
+            subjectName: selectedSubject || undefined,
+            timerType: 'pomodoro',
             sessionId: generateId(),
-            notes: null,
-            startTime,
+            startedAt,
           }),
         });
 
-        if (!completionResponse.ok) {
-          const errorData = await completionResponse.json().catch(() => ({}));
-          throw new Error(errorData.error || 'Failed to complete study session');
+        if (!submissionResponse.ok) {
+          const errorData = await submissionResponse.json().catch(() => ({}));
+          throw new Error(errorData.error || 'Failed to submit study session');
         }
 
-        const result = await completionResponse.json();
+        const result = await submissionResponse.json();
 
         // Update local state with the server-authoritative XP and level
         // Use userProfileStorage to update the profile
@@ -203,12 +205,12 @@ export default function StudyTimer() {
           if (profile) {
             const updatedProfile = {
               ...profile,
-              xp: result.xp,
-              level: result.level,
-              studyTimeToday: result.xp > profile.xp ? profile.studyTimeToday + minutes : profile.studyTimeToday,
+              xp: result.stats.xp,
+              level: result.stats.level,
+              studyTimeToday: result.stats.totalStudySeconds > profile.xp ? profile.studyTimeToday + minutes : profile.studyTimeToday,
               studyTimeThisWeek: profile.studyTimeThisWeek + minutes,
               studyTimeThisMonth: profile.studyTimeThisMonth + minutes,
-              studyTimeAllTime: profile.studyTimeAllTime + minutes,
+              studyTimeAllTime: result.stats.totalStudySeconds,
             };
             await userProfileStorage.update(updatedProfile);
           }
@@ -217,12 +219,15 @@ export default function StudyTimer() {
         }
 
         // Handle level-up notification
-        if (result.leveledUp) {
-          // Generate level-up activity and notification
-          // This will be handled by the social service if needed
+        const profileFromStorage = await userProfileStorage.get(user.id);
+        if (profileFromStorage) {
+          if (result.stats.leveledUp || result.stats.xp > profileFromStorage.xp) {
+            // Generate level-up activity and notification
+            // This will be handled by the social service if needed
+          }
         }
       } catch (error: any) {
-        console.error('Study session completion error:', error);
+        console.error('Study session submission error:', error);
         // Fallback: update local profile manually if server failed
         try {
           const profile = await userProfileStorage.get(user.id);

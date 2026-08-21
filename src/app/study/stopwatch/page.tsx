@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, Button, Badge } from '@/components/ui';
-import { subjectStorage, studySessionStorage } from '@/lib/storage';
+import { subjectStorage, studySessionStorage, userProfileStorage } from '@/lib/storage';
 import { recordStudySessionComplete } from '@/lib/social/socialService';
 
 const DEFAULT_SUBJECTS = [
@@ -223,20 +223,52 @@ export default function StudyStopwatch() {
 
   const handleSaveSession = async () => {
     if (!user) return;
-    const sessionId = `stopwatch-${Date.now()}`;
     const minutes = Math.floor(totalTime / 60);
     try {
-      const session = {
-        id: sessionId,
-        subjectId: selectedSubject || 'unknown',
-        topicId: null,
-        duration: minutes,
-        startTime: new Date(Date.now() - totalTime * 1000).toISOString(),
-        endTime: new Date().toISOString(),
-        notes: `Stopwatch session - ${laps.length} laps recorded`,
-      };
-      await studySessionStorage.create(session);
-      await recordStudySessionComplete(user.id, session, selectedSubject || 'Study');
+      const submissionResponse = await fetch('/api/study/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          durationSeconds: totalTime,
+          subjectId: selectedSubject || undefined,
+          subjectName: selectedSubject || 'Study',
+          timerType: 'stopwatch',
+          sessionId: `stopwatch-${Date.now()}`,
+          startedAt: new Date(Date.now() - totalTime * 1000).toISOString(),
+        }),
+      });
+
+      if (!submissionResponse.ok) {
+        const errorData = await submissionResponse.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to submit study session');
+      }
+
+      const result = await submissionResponse.json();
+
+      // Update local state with server-authoritative data
+      setTotalTime((p) => p + minutes);
+      // Use daily stats session count as a proxy for completed sessions
+      // The daily stats are loaded separately, so we just note the save happened
+
+      // Update XP and level from server response
+      try {
+        const profile = await userProfileStorage.get(user.id);
+        if (profile) {
+          const updatedProfile = {
+            ...profile,
+            xp: result.stats.xp,
+            level: result.stats.level,
+            studyTimeToday: result.stats.totalStudySeconds > profile.studyTimeToday ? profile.studyTimeToday + minutes : profile.studyTimeToday,
+            studyTimeThisWeek: profile.studyTimeThisWeek + minutes,
+            studyTimeThisMonth: profile.studyTimeThisMonth + minutes,
+            studyTimeAllTime: result.stats.totalStudySeconds,
+          };
+          await userProfileStorage.update(updatedProfile);
+        }
+      } catch {
+        // Profile update is non-critical
+      }
     } catch (err) {
       console.error('Failed to save session:', err);
     }
