@@ -396,6 +396,11 @@ export default function StudyTimer() {
         setActiveStudySeconds((p) => p + Math.floor((now - currentRunStartedAt) / 1000));
         setCurrentRunStartedAt(null);
       }
+      // Immediately submit the newly accumulated study time
+      if (activeStudySeconds > 0 && selectedSubject) {
+        recordStudySession(activeStudySeconds);
+        setActiveStudySeconds(0);
+      }
     } else {
       if (endTimeRef.current !== null) {
         pausedRemainingRef.current = Math.max(0, (endTimeRef.current - Date.now()) / 1000);
@@ -406,11 +411,16 @@ export default function StudyTimer() {
         setActiveStudySeconds((p) => p + Math.floor((now - currentRunStartedAt) / 1000));
         setCurrentRunStartedAt(null);
       }
+      // Immediately submit the newly accumulated study time
+      if (activeStudySeconds > 0 && selectedSubject) {
+        recordStudySession(activeStudySeconds);
+        setActiveStudySeconds(0);
+      }
     }
     clearTimerInterval();
     setIsRunning(false);
     setIsPaused(true);
-  }, [timerMode, clearTimerInterval, currentRunStartedAt]);
+  }, [timerMode, clearTimerInterval, currentRunStartedAt, activeStudySeconds, selectedSubject, recordStudySession]);
 
   const handleResume = useCallback(() => {
     if (timerMode === 'stopwatch') {

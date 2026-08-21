@@ -7,6 +7,7 @@ import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, Button, Badge } from '@/components/ui';
 import { subjectStorage, studySessionStorage, userProfileStorage } from '@/lib/storage';
 import { recordStudySessionComplete } from '@/lib/social/socialService';
+import { calculateXpFromDuration } from '@/lib/server/xp';
 
 const DEFAULT_SUBJECTS = [
   'Maths Methods',
@@ -167,13 +168,64 @@ export default function StudyStopwatch() {
     intervalRef.current = setInterval(tick, 50);
   };
 
-  const pauseTimer = () => {
+  const pauseTimer = async () => {
     if (intervalRef.current !== null) clearInterval(intervalRef.current);
     // Sync accumulated active study time on pause
     const now = Date.now();
     if (currentRunStartedAt !== null) {
       setActiveStudySeconds((p) => p + Math.floor((now - currentRunStartedAt) / 1000));
       setCurrentRunStartedAt(null);
+    }
+    // Immediately submit the newly accumulated study time
+    if (activeStudySeconds > 0 && selectedSubject) {
+      const minutes = Math.floor(activeStudySeconds / 60);
+      try {
+        const submissionResponse = await fetch('/api/study/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            durationSeconds: activeStudySeconds,
+            subjectId: selectedSubject || undefined,
+            subjectName: selectedSubject || 'Study',
+            timerType: 'stopwatch',
+            sessionId: `stopwatch-${Date.now()}`,
+            startedAt: new Date(Date.now() - activeStudySeconds * 1000).toISOString(),
+          }),
+        });
+
+        if (!submissionResponse.ok) {
+          const errorData = await submissionResponse.json().catch(() => ({}));
+          throw new Error(errorData.error || 'Failed to submit study session');
+        }
+
+        const result = await submissionResponse.json();
+
+        // Update local state with server-authoritative data
+        setActiveStudySeconds(0);
+        setCurrentRunStartedAt(null);
+
+        // Update XP and level from server response
+        try {
+          const profile = await userProfileStorage.get(user!.id);
+          if (profile) {
+            const updatedProfile = {
+              ...profile,
+              xp: result.stats.xp,
+              level: result.stats.level,
+              studyTimeToday: result.stats.totalStudySeconds > profile.studyTimeToday ? profile.studyTimeToday + minutes : profile.studyTimeToday,
+              studyTimeThisWeek: profile.studyTimeThisWeek + minutes,
+              studyTimeThisMonth: profile.studyTimeThisMonth + minutes,
+              studyTimeAllTime: result.stats.totalStudySeconds,
+            };
+            await userProfileStorage.update(updatedProfile);
+          }
+        } catch {
+          // Profile update is non-critical
+        }
+      } catch (err) {
+        console.error('Failed to save session:', err);
+      }
     }
     pausedElapsedRef.current = totalTime;
     setIsPaused(true);
@@ -243,19 +295,21 @@ export default function StudyStopwatch() {
 
   const handleSaveSession = async () => {
     if (!user) return;
-    const minutes = Math.floor(totalTime / 60);
+    // Use activeStudySeconds (excludes paused time) instead of totalTime
+    const durationSeconds = activeStudySeconds;
+    const minutes = Math.floor(durationSeconds / 60);
     try {
       const submissionResponse = await fetch('/api/study/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          durationSeconds: totalTime,
+          durationSeconds: durationSeconds,
           subjectId: selectedSubject || undefined,
           subjectName: selectedSubject || 'Study',
           timerType: 'stopwatch',
           sessionId: `stopwatch-${Date.now()}`,
-          startedAt: new Date(Date.now() - totalTime * 1000).toISOString(),
+          startedAt: durationSeconds > 0 ? new Date(Date.now() - durationSeconds * 1000).toISOString() : new Date().toISOString(),
         }),
       });
 
@@ -267,13 +321,12 @@ export default function StudyStopwatch() {
       const result = await submissionResponse.json();
 
       // Update local state with server-authoritative data
-      setTotalTime((p) => p + minutes);
-      // Use daily stats session count as a proxy for completed sessions
-      // The daily stats are loaded separately, so we just note the save happened
+      setActiveStudySeconds(0);
+      setCurrentRunStartedAt(null);
 
       // Update XP and level from server response
       try {
-        const profile = await userProfileStorage.get(user.id);
+        const profile = await userProfileStorage.get(user!.id);
         if (profile) {
           const updatedProfile = {
             ...profile,
