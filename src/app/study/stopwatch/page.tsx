@@ -99,6 +99,10 @@ export default function StudyStopwatch() {
   const [currentLapStart, setCurrentLapStart] = useState(0);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
 
+  // Active study time tracking
+  const [activeStudySeconds, setActiveStudySeconds] = useState(0);
+  const [currentRunStartedAt, setCurrentRunStartedAt] = useState<number | null>(null);
+
   const [dailyStats, setDailyStats] = useState({ totalTime: 0, sessionCount: 0 });
   const [weeklyTotal, setWeeklyTotal] = useState(0);
 
@@ -145,6 +149,7 @@ export default function StudyStopwatch() {
   const tick = () => {
     if (startTimeRef.current === null) return;
     const now = Date.now();
+    // Only count active running time, not paused time
     const elapsed = (now - startTimeRef.current) / 1000 + pausedElapsedRef.current;
     setTotalTime(elapsed);
   };
@@ -164,6 +169,12 @@ export default function StudyStopwatch() {
 
   const pauseTimer = () => {
     if (intervalRef.current !== null) clearInterval(intervalRef.current);
+    // Sync accumulated active study time on pause
+    const now = Date.now();
+    if (currentRunStartedAt !== null) {
+      setActiveStudySeconds((p) => p + Math.floor((now - currentRunStartedAt) / 1000));
+      setCurrentRunStartedAt(null);
+    }
     pausedElapsedRef.current = totalTime;
     setIsPaused(true);
     setIsRunning(false);
@@ -171,6 +182,8 @@ export default function StudyStopwatch() {
 
   const resumeTimer = () => {
     if (intervalRef.current !== null) clearInterval(intervalRef.current);
+    // Start new active run
+    setCurrentRunStartedAt(Date.now());
     startTimeRef.current = Date.now();
     setIsRunning(true);
     setIsPaused(false);
@@ -178,6 +191,13 @@ export default function StudyStopwatch() {
   };
 
   const resetTimer = () => {
+    // Finalize any remaining running interval
+    const now = Date.now();
+    if (currentRunStartedAt !== null) {
+      setActiveStudySeconds((p) => p + Math.floor((now - currentRunStartedAt) / 1000));
+      setCurrentRunStartedAt(null);
+    }
+
     if (intervalRef.current !== null) clearInterval(intervalRef.current);
     const sessionTime = totalTime;
     setIsRunning(false);

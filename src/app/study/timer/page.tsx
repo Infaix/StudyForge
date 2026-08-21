@@ -88,6 +88,10 @@ export default function StudyTimer() {
   const [completedSessions, setCompletedSessions] = useState(0);
   const [totalStudyTime, setTotalStudyTime] = useState(0);
 
+  // Active study time tracking
+  const [activeStudySeconds, setActiveStudySeconds] = useState(0);
+  const [currentRunStartedAt, setCurrentRunStartedAt] = useState<number | null>(null);
+
   const endTimeRef = useRef<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const stopwatchStartRef = useRef<number | null>(null);
@@ -255,6 +259,7 @@ export default function StudyTimer() {
       setRemainingTime(durationSeconds);
       setIsRunning(true);
       setIsPaused(false);
+      setCurrentRunStartedAt(Date.now());
       endTimeRef.current = Date.now() + durationSeconds * 1000;
 
       intervalRef.current = setInterval(() => {
@@ -294,9 +299,9 @@ export default function StudyTimer() {
     playNotificationSound();
 
     if (completedPhase.type === 'focus') {
-      setTotalStudyTime((p) => p + completedPhase.duration);
+      setTotalStudyTime((p) => p + activeStudySeconds);
       setCompletedSessions((p) => p + 1);
-      recordStudySession(completedPhase.duration);
+      recordStudySession(activeStudySeconds);
     }
 
     const s = settingsRef.current;
@@ -319,6 +324,8 @@ export default function StudyTimer() {
     pomodoroPhaseRef.current = nextPhase;
     setRemainingTime(nextPhase.duration);
     setTotalTime(nextPhase.duration);
+    setActiveStudySeconds(0); // Reset accumulated time for next session
+    setCurrentRunStartedAt(null);
 
     const shouldAutoStart =
       completedPhase.type === 'focus' ? s.autoStartBreaks : s.autoStartFocus;
@@ -329,7 +336,7 @@ export default function StudyTimer() {
         startTimerInterval(nextPhase.duration);
       }, 500);
     }
-  }, [playNotificationSound, recordStudySession, startTimerInterval]);
+  }, [playNotificationSound, recordStudySession, startTimerInterval, activeStudySeconds]);
 
   useEffect(() => {
     handlePomodoroPhaseCompleteRef.current = handlePomodoroPhaseComplete;
@@ -338,10 +345,9 @@ export default function StudyTimer() {
   const handleCountdownComplete = useCallback(() => {
     playNotificationSound();
     setCompletedSessions((p) => p + 1);
-    const duration = pomodoroPhaseRef.current.type === 'focus' ? pomodoroPhaseRef.current.duration : totalTime;
-    setTotalStudyTime((p) => p + duration);
-    recordStudySession(duration);
-  }, [playNotificationSound, recordStudySession, totalTime]);
+    setTotalStudyTime((p) => p + activeStudySeconds);
+    recordStudySession(activeStudySeconds);
+  }, [playNotificationSound, recordStudySession, activeStudySeconds]);
 
   const handleStart = useCallback(() => {
     if (!selectedSubject) return;
@@ -384,15 +390,27 @@ export default function StudyTimer() {
   const handlePause = useCallback(() => {
     if (timerMode === 'stopwatch') {
       stopwatchStartRef.current = null;
+      // Sync accumulated study time on pause
+      const now = Date.now();
+      if (currentRunStartedAt !== null) {
+        setActiveStudySeconds((p) => p + Math.floor((now - currentRunStartedAt) / 1000));
+        setCurrentRunStartedAt(null);
+      }
     } else {
       if (endTimeRef.current !== null) {
         pausedRemainingRef.current = Math.max(0, (endTimeRef.current - Date.now()) / 1000);
+      }
+      // Sync accumulated study time on pause
+      const now = Date.now();
+      if (currentRunStartedAt !== null) {
+        setActiveStudySeconds((p) => p + Math.floor((now - currentRunStartedAt) / 1000));
+        setCurrentRunStartedAt(null);
       }
     }
     clearTimerInterval();
     setIsRunning(false);
     setIsPaused(true);
-  }, [timerMode, clearTimerInterval]);
+  }, [timerMode, clearTimerInterval, currentRunStartedAt]);
 
   const handleResume = useCallback(() => {
     if (timerMode === 'stopwatch') {
@@ -400,9 +418,12 @@ export default function StudyTimer() {
       return;
     }
 
-    const remaining = pausedRemainingRef.current;
+    // Start new active run
+    setCurrentRunStartedAt(Date.now());
     setIsRunning(true);
     setIsPaused(false);
+
+    const remaining = pausedRemainingRef.current;
     endTimeRef.current = Date.now() + remaining * 1000;
     setRemainingTime(Math.ceil(remaining));
 
@@ -422,6 +443,13 @@ export default function StudyTimer() {
   }, [timerMode, startStopwatchInterval]);
 
   const handleReset = useCallback(() => {
+    // Finalize any remaining running interval
+    const now = Date.now();
+    if (currentRunStartedAt !== null) {
+      setActiveStudySeconds((p) => p + Math.floor((now - currentRunStartedAt) / 1000));
+      setCurrentRunStartedAt(null);
+    }
+
     clearTimerInterval();
     onTimerCompleteRef.current = null;
     setIsRunning(false);
