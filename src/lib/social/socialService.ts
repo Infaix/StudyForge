@@ -9,7 +9,7 @@ import {
   DEFAULT_PRIVACY_SETTINGS,
 } from '@/types';
 
-function generateId(prefix: string): string {
+export function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
 }
 

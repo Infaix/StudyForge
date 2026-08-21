@@ -8,6 +8,7 @@ import { Dialog } from '@/components/ui/Dialog';
 import { subjectStorage, studySessionStorage, userProfileStorage } from '@/lib/storage';
 import { useAuth } from '@/contexts/AuthContext';
 import { recordStudySessionComplete } from '@/lib/social/socialService';
+import { calculateXpFromDuration } from '@/lib/server/xp';
 
 type TimerMode = 'stopwatch' | 'countdown' | 'pomodoro' | 'custom';
 
@@ -160,11 +161,11 @@ export default function StudyTimer() {
       if (!user || durationSeconds <= 0 || !selectedSubject) return;
       const now = new Date().toISOString();
       const startTime = new Date(Date.now() - durationSeconds * 1000).toISOString();
-      const sessionId = generateId();
       const minutes = Math.floor(durationSeconds / 60);
 
+      // First, persist the study session to D1
       await studySessionStorage.create({
-        id: sessionId,
+        id: generateId(),
         subjectId: selectedSubject,
         topicId: null,
         duration: minutes,
@@ -173,22 +174,56 @@ export default function StudyTimer() {
         notes: null,
       });
 
+      // Then, call the server to validate and award XP atomically
       try {
-        await recordStudySessionComplete(
-          user.id,
-          {
-            id: sessionId,
+        const completionResponse = await fetch('/api/study/sessions/complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            duration: durationSeconds,
             subjectId: selectedSubject,
-            topicId: null,
-            duration: minutes,
-            startTime,
-            endTime: now,
+            sessionId: generateId(),
             notes: null,
-          },
-          selectedSubject
-        );
-      } catch {
-        // Non-critical: XP award is best-effort
+            startTime,
+          }),
+        });
+
+        if (!completionResponse.ok) {
+          const errorData = await completionResponse.json().catch(() => ({}));
+          throw new Error(errorData.error || 'Failed to complete study session');
+        }
+
+        const result = await completionResponse.json();
+
+        // Update local state with the server-authoritative XP and level
+        // Use userProfileStorage to update the profile
+        try {
+          const profile = await userProfileStorage.get(user.id);
+          if (profile) {
+            const updatedProfile = {
+              ...profile,
+              xp: result.xp,
+              level: result.level,
+              studyTimeToday: result.xp > profile.xp ? profile.studyTimeToday + minutes : profile.studyTimeToday,
+              studyTimeThisWeek: profile.studyTimeThisWeek + minutes,
+              studyTimeThisMonth: profile.studyTimeThisMonth + minutes,
+              studyTimeAllTime: profile.studyTimeAllTime + minutes,
+            };
+            await userProfileStorage.update(updatedProfile);
+          }
+        } catch {
+          // Profile update is non-critical
+        }
+
+        // Handle level-up notification
+        if (result.leveledUp) {
+          // Generate level-up activity and notification
+          // This will be handled by the social service if needed
+        }
+      } catch (error: any) {
+        console.error('Study session completion error:', error);
+        // Fallback: update local profile manually if server failed
         try {
           const profile = await userProfileStorage.get(user.id);
           if (profile) {

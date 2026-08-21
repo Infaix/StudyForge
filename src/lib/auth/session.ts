@@ -9,17 +9,20 @@ export async function createSessionCookie(userId: string): Promise<string> {
 }
 
 export function destroySessionCookie(): string {
-  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure`;
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure;`;
 }
 
 export async function getSessionFromRequest(request: Request): Promise<SessionPayload | null> {
   const cookieHeader = request.headers.get('Cookie') || '';
-  const cookies = Object.fromEntries(
-    cookieHeader.split(';').map((c) => {
-      const [key, ...val] = c.trim().split('=');
-      return [key, val.join('=')];
-    })
-  );
+  // Parse cookies properly - handle multiple cookies
+  const cookies: Record<string, string> = {};
+  cookieHeader.split(';').forEach((c) => {
+    const eqIdx = c.indexOf('=');
+    if (eqIdx === -1) return;
+    const key = c.substring(0, eqIdx).trim();
+    const val = c.substring(eqIdx + 1).trim();
+    cookies[key] = val;
+  });
 
   const token = cookies[SESSION_COOKIE];
   if (!token) return null;

@@ -71,6 +71,8 @@ export const studySessionStorage = {
   create: (session: StudySession) => apiPost('/api/data/study-sessions', session),
   update: (session: StudySession) => apiPut(`/api/data/study-sessions/${session.id}`, session),
   delete: (id: string) => apiDelete(`/api/data/study-sessions/${id}`),
+  complete: (session: StudySession, subjectName?: string) =>
+    apiPost('/api/study/sessions/complete', { duration: session.duration, subjectId: session.subjectId ?? null, sessionId: session.id, notes: session.notes, startTime: session.startTime }),
 };
 
 export const studyTaskStorage = {
