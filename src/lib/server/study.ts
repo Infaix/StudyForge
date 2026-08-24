@@ -334,6 +334,10 @@ export async function recordStudySegment(
   const newLevel = getLevelFromXp(newXp);
   const leveledUp = newLevel > prevLevel;
 
+  // Aggregates are read AFTER the segment insert so they already include
+  // this session's seconds; only the profile-derived fields (xp/level/
+  // streak) are still pre-update here.
+  const stats = await getUserStudyStats(userId);
   const streakInfo = await getStreakInfo(userId);
 
   await db.prepare(`
@@ -364,9 +368,21 @@ export async function recordStudySegment(
     )
     .run();
 
-  // Recompute AFTER the XP write so the response carries current values —
-  // clients treat this payload as authoritative (spec #16).
-  const finalStats = await getUserStudyStats(userId);
+  // The response payload must be authoritative (clients apply it verbatim):
+  // override the profile-derived fields with the exact values just written
+  // instead of issuing a second aggregate round-trip. Session counters
+  // (totalStudySeconds etc.) are unaffected by the profile update.
+  const xpForNextLevel = Math.max(100, 100 * newLevel);
+  const xpIntoLevel = newXp - xpRequiredForLevel(newLevel);
+  const finalStats: StudyStats = {
+    ...stats,
+    totalXp: newXp,
+    level: newLevel,
+    xpIntoLevel,
+    xpForNextLevel,
+    progressPercent: Math.min(100, Math.max(0, (xpIntoLevel / xpForNextLevel) * 100)),
+    streak: streakInfo.currentStreak,
+  };
 
   // Social activity only for meaningful completions, not every pause.
   if (seg.completed) {
