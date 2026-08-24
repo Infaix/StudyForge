@@ -8,16 +8,7 @@ import { Dialog } from '@/components/ui/Dialog';
 import { subjectStorage } from '@/lib/storage';
 import { Subject } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
-import {
-  StudySessionClient,
-  StudyStats,
-  SegmentAck,
-  MIN_SUBMIT_SECONDS,
-  refreshUserStats,
-  flushPendingSegments,
-  getPendingSegments,
-  startPendingFlush,
-} from '@/lib/client/studySubmission';
+import { useStudyTimeSync } from '@/lib/client/useStudyTimeSync';
 
 type TimerMode = 'stopwatch' | 'countdown' | 'pomodoro' | 'custom';
 
@@ -67,7 +58,7 @@ function formatMinutes(totalSeconds: number): string {
 }
 
 export default function StudyTimer() {
-  const { user, updateUser } = useAuth();
+  const { user } = useAuth();
   const router = useRouter();
 
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -76,8 +67,8 @@ export default function StudyTimer() {
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [elapsedStopwatch, setElapsedStopwatch] = useState(0);
-  const [remainingTime, setRemainingTime] = useState(0);
-  const [totalTime, setTotalTime] = useState(0);
+  const [remainingTime, setRemainingTime] = useState(DEFAULT_SETTINGS.focusDuration * 60);
+  const [totalTime, setTotalTime] = useState(DEFAULT_SETTINGS.focusDuration * 60);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [customMinutes, setCustomMinutes] = useState(30);
@@ -91,29 +82,15 @@ export default function StudyTimer() {
   });
   const [completedSessions, setCompletedSessions] = useState(0);
 
-  // Server-authoritative tracking state (spec #13):
-  //   recordedSeconds — acknowledged by the API/D1
-  //   pendingSeconds  — queued locally after a network failure, retrying
-  //   openRun         — measured live, submitted on pause/stop/completion
-  const [recordedSeconds, setRecordedSeconds] = useState(0);
-  const [pendingSeconds, setPendingSeconds] = useState(0);
-  const [lastAward, setLastAward] = useState<{ seconds: number; xp: number; id: number } | null>(null);
-  const [stats, setStats] = useState<StudyStats | null>(null);
-
   const settingsRef = useRef<PomodoroSettings>(settings);
   const pomodoroPhaseRef = useRef<PomodoroPhase>(pomodoroPhase);
   const pomodoroSessionRef = useRef<number>(pomodoroSession);
   const onTimerCompleteRef = useRef<(() => void) | null>(null);
   const handlePomodoroPhaseCompleteRef = useRef<() => void>(() => {});
-  const sessionClientRef = useRef<StudySessionClient | null>(null);
-  const runStartRef = useRef<number | null>(null);
-  const segStartRef = useRef<string>('');
   const endTimeRef = useRef<number | null>(null);
   const pausedRemainingRef = useRef<number>(0);
   const stopwatchStartRef = useRef<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const awardTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const sessionTotalsRef = useRef({ seconds: 0, xp: 0 });
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -128,7 +105,6 @@ export default function StudyTimer() {
   useEffect(() => {
     return () => {
       if (intervalRef.current !== null) clearInterval(intervalRef.current);
-      awardTimeoutRef.current && clearTimeout(awardTimeoutRef.current);
     };
   }, []);
 
@@ -144,98 +120,18 @@ export default function StudyTimer() {
     if (!user) router.push('/login');
   }, [user, router]);
 
-  useEffect(() => {
-    if (!user) return;
-    refreshUserStats().then(setStats);
-    startPendingFlush((ack) => {
-      setPendingSeconds((p) => Math.max(0, p - ack.recordedSeconds));
-      applyAck(ack);
-    });
-    if (getPendingSegments().length > 0) flushPendingSegments();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
-
   const selectedSubject = subjects.find((s) => s.id === selectedSubjectId) || null;
 
-  const getSubjectForSubmission = useCallback(() => ({
-    id: selectedSubjectId || undefined,
-    name: selectedSubject?.name ?? null,
-  }), [selectedSubjectId, selectedSubject]);
-
-  const applyStats = useCallback((s: StudyStats) => {
-    setStats(s);
-    updateUser({
-      xp: s.totalXp,
-      level: s.level,
-      streak: s.streak,
-      studyTimeToday: Math.floor(s.todayStudySeconds / 60),
-      studyTimeThisWeek: Math.floor(s.weekStudySeconds / 60),
-      studyTimeThisMonth: Math.floor(s.monthStudySeconds / 60),
-      studyTimeAllTime: Math.floor(s.totalStudySeconds / 60),
-    });
-  }, [updateUser]);
-
-  const applyAck = useCallback((ack: SegmentAck) => {
-    setRecordedSeconds((r) => r + ack.recordedSeconds);
-    sessionTotalsRef.current.seconds += ack.recordedSeconds;
-    sessionTotalsRef.current.xp += ack.awardedXp;
-    if (ack.stats) applyStats(ack.stats);
-    if (ack.recordedSeconds > 0 || ack.awardedXp > 0) {
-      awardTimeoutRef.current && clearTimeout(awardTimeoutRef.current);
-      setLastAward({ seconds: ack.recordedSeconds, xp: ack.awardedXp, id: Date.now() });
-      awardTimeoutRef.current = setTimeout(() => setLastAward(null), 6000);
-    }
-  }, [applyStats]);
-
-  /** Active (unsubmitted) seconds in the currently open run. */
-  const activeSeconds = (): number =>
-    runStartRef.current === null ? 0 : Math.floor((Date.now() - runStartRef.current) / 1000);
-
-  /** Total studied this session: acked + queued + currently accumulating. */
-  const sessionStudiedSeconds = (): number =>
-    recordedSeconds + pendingSeconds + activeSeconds();
-
-  /**
-   * Submit the open active segment to the canonical endpoint.
-   * Closes the run immediately so resumed time opens a NEW segment — making
-   * double-submission structurally impossible. Network failures land in the
-   * durable pending queue (pending sync UI), permanent rejections do not fake
-   * success.
-   */
-  const flushActiveSegment = useCallback(async (completed: boolean) => {
-    const session = sessionClientRef.current;
-    if (!session) {
-      runStartRef.current = null;
-      segStartRef.current = '';
-      return;
-    }
-    const endedAtMs = Date.now();
-    const duration = activeSeconds();
-    const startedAt = segStartRef.current || new Date(endedAtMs - duration * 1000).toISOString();
-    runStartRef.current = null;
-    segStartRef.current = '';
-
-    if (duration < MIN_SUBMIT_SECONDS) return;
-
-    try {
-      const outcome = await session.submit({
-        durationSeconds: duration,
-        startedAt,
-        endedAt: new Date(endedAtMs).toISOString(),
-        completed,
-      });
-      if (outcome.pending) {
-        setPendingSeconds((p) => p + duration);
-      } else if (outcome.recorded && outcome.ack) {
-        applyAck(outcome.ack);
-        if (outcome.ack.leveledUp && typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('studyforge-levelup', { detail: { level: outcome.ack.stats.level } }));
-        }
-      }
-    } catch {
-      setPendingSeconds((p) => p + duration);
-    }
-  }, [applyAck]);
+  // All persistence concerns live in the shared hook (spec #26): segment
+  // submission, idempotency, checkpoints, refresh recovery, offline queue,
+  // lifecycle handlers and server-authoritative stat sync.
+  const sync = useStudyTimeSync({
+    mode: timerMode,
+    getSubject: useCallback(
+      () => ({ id: selectedSubjectId || undefined, name: selectedSubject?.name ?? null }),
+      [selectedSubjectId, selectedSubject]
+    ),
+  });
 
   const playNotificationSound = useCallback(() => {
     if (!settingsRef.current.soundEnabled) return;
@@ -256,14 +152,10 @@ export default function StudyTimer() {
     }
   }, []);
 
-  /** Open a new measurement run if none is open. */
-  const openRun = () => {
-    if (runStartRef.current === null) {
-      runStartRef.current = Date.now();
-      segStartRef.current = new Date().toISOString();
-    }
-  };
-
+  /**
+   * Drive a countdown-style interval. `track` is true only for time that
+   * generates study time — pomodoro breaks never open a run (#13).
+   */
   const startInterval = useCallback(
     (durationSeconds: number, track: boolean) => {
       if (intervalRef.current !== null) clearInterval(intervalRef.current);
@@ -271,7 +163,7 @@ export default function StudyTimer() {
       setIsRunning(true);
       setIsPaused(false);
       endTimeRef.current = Date.now() + durationSeconds * 1000;
-      if (track) openRun();
+      if (track) sync.openRun();
 
       intervalRef.current = setInterval(() => {
         if (endTimeRef.current === null) return;
@@ -286,7 +178,7 @@ export default function StudyTimer() {
         }
       }, 250);
     },
-    []
+    [sync]
   );
 
   const startStopwatchInterval = useCallback(() => {
@@ -294,12 +186,12 @@ export default function StudyTimer() {
     setIsRunning(true);
     setIsPaused(false);
     stopwatchStartRef.current = Date.now() - elapsedStopwatch * 1000;
-    openRun();
+    sync.openRun();
     intervalRef.current = setInterval(() => {
       if (stopwatchStartRef.current === null) return;
       setElapsedStopwatch((Date.now() - stopwatchStartRef.current) / 1000);
     }, 100);
-  }, [elapsedStopwatch]);
+  }, [elapsedStopwatch, sync]);
 
   const handlePomodoroPhaseComplete = useCallback(() => {
     const completedPhase = pomodoroPhaseRef.current;
@@ -309,8 +201,8 @@ export default function StudyTimer() {
 
     if (completedPhase.type === 'focus') {
       setCompletedSessions((p) => p + 1);
-      // Record the focus work immediately (breaks are never counted).
-      void flushActiveSegment(true);
+      // Persist the actual work interval immediately; breaks never count (#13).
+      void sync.flushActive(true);
     }
 
     const s = settingsRef.current;
@@ -338,13 +230,14 @@ export default function StudyTimer() {
       completedPhase.type === 'focus' ? s.autoStartBreaks : s.autoStartFocus;
 
     if (shouldAutoStart) {
-      const track = nextPhase.type === 'focus'; // focus counts, breaks do not
+      // Break time must NOT generate study time; focus resumes a new segment.
+      const track = nextPhase.type === 'focus';
       setTimeout(() => {
         onTimerCompleteRef.current = handlePomodoroPhaseCompleteRef.current;
         startInterval(nextPhase.duration, track);
       }, 500);
     }
-  }, [playNotificationSound, flushActiveSegment, startInterval]);
+  }, [playNotificationSound, sync, startInterval]);
 
   useEffect(() => {
     handlePomodoroPhaseCompleteRef.current = handlePomodoroPhaseComplete;
@@ -354,15 +247,12 @@ export default function StudyTimer() {
     playNotificationSound();
     setCompletedSessions((p) => p + 1);
     // Natural finish: submit the final unrecorded segment, mark completed.
-    // Idempotent segmentId means a retried completion cannot award twice.
-    await flushActiveSegment(true);
-  }, [playNotificationSound, flushActiveSegment]);
+    // Idempotent segmentIds mean a retried completion cannot award twice.
+    await sync.flushActive(true);
+  }, [playNotificationSound, sync]);
 
   const handleStart = useCallback(() => {
-    if (!sessionClientRef.current ||
-        (timerMode === 'pomodoro' && sessionClientRef.current.mode !== 'pomodoro')) {
-      sessionClientRef.current = new StudySessionClient(timerMode, getSubjectForSubmission);
-    }
+    sync.beginSession();
 
     if (timerMode === 'stopwatch') {
       startStopwatchInterval();
@@ -381,13 +271,13 @@ export default function StudyTimer() {
       return;
     }
 
-    // Pomodoro
+    // Pomodoro: only focus phases track study time.
     const isFocus = pomodoroPhaseRef.current.type === 'focus';
     onTimerCompleteRef.current = handlePomodoroPhaseComplete;
     startInterval(pomodoroPhaseRef.current.duration, isFocus);
   }, [
     timerMode,
-    getSubjectForSubmission,
+    sync,
     startStopwatchInterval,
     startInterval,
     countdownMinutes,
@@ -396,25 +286,19 @@ export default function StudyTimer() {
     handlePomodoroPhaseComplete,
   ]);
 
+  /** Pause: immediately submit newly elapsed active time (spec #6). */
   const handlePause = useCallback(async () => {
     if (timerMode === 'stopwatch') {
       stopwatchStartRef.current = null;
-      if (intervalRef.current !== null) clearInterval(intervalRef.current);
-      intervalRef.current = null;
-      // Immediately submit the newly accumulated active study time (spec #3/#4).
-      await flushActiveSegment(false);
-    } else {
-      if (endTimeRef.current !== null) {
-        pausedRemainingRef.current = Math.max(0, (endTimeRef.current - Date.now()) / 1000);
-      }
-      if (intervalRef.current !== null) clearInterval(intervalRef.current);
-      intervalRef.current = null;
-      // Focus/countdown/custom pause: submit active time; break pauses are no-ops.
-      await flushActiveSegment(false);
+    } else if (endTimeRef.current !== null) {
+      pausedRemainingRef.current = Math.max(0, (endTimeRef.current - Date.now()) / 1000);
     }
+    if (intervalRef.current !== null) clearInterval(intervalRef.current);
+    intervalRef.current = null;
+    await sync.pauseAndFlush();
     setIsRunning(false);
     setIsPaused(true);
-  }, [timerMode, flushActiveSegment]);
+  }, [timerMode, sync]);
 
   const handleResume = useCallback(() => {
     if (timerMode === 'stopwatch') {
@@ -423,12 +307,14 @@ export default function StudyTimer() {
     }
 
     const remaining = pausedRemainingRef.current;
+    // Break phases resume without tracking; everything else opens a new
+    // segment so resumed time can never be submitted twice (#7).
     const track = timerMode !== 'pomodoro' || pomodoroPhaseRef.current.type === 'focus';
     setIsRunning(true);
     setIsPaused(false);
     endTimeRef.current = Date.now() + remaining * 1000;
     setRemainingTime(Math.ceil(remaining));
-    if (track) openRun();
+    if (track) sync.resumeRun();
 
     if (intervalRef.current !== null) clearInterval(intervalRef.current);
     intervalRef.current = setInterval(() => {
@@ -442,59 +328,14 @@ export default function StudyTimer() {
         onTimerCompleteRef.current?.();
       }
     }, 250);
-  }, [timerMode, startStopwatchInterval]);
+  }, [timerMode, startStopwatchInterval, sync]);
 
-  const handleReset = useCallback(async () => {
-    // Flush any open active time so nothing studied is lost, then close out.
-    await flushActiveSegment(false);
-    if (intervalRef.current !== null) clearInterval(intervalRef.current);
-    intervalRef.current = null;
-    onTimerCompleteRef.current = null;
-    sessionClientRef.current = null;
-    setIsRunning(false);
-    setIsPaused(false);
-    stopwatchStartRef.current = null;
-    endTimeRef.current = null;
-    pausedRemainingRef.current = 0;
-    setElapsedStopwatch(0);
-
-    if (timerMode === 'stopwatch') {
-      setRemainingTime(0);
-      setTotalTime(0);
-    } else if (timerMode === 'countdown') {
-      const total = countdownMinutes * 60;
-      setRemainingTime(total);
-      setTotalTime(total);
-    } else if (timerMode === 'custom') {
-      const total = customMinutes * 60;
-      setRemainingTime(total);
-      setTotalTime(total);
-    } else {
-      const total = settings.focusDuration * 60;
-      setRemainingTime(total);
-      setTotalTime(total);
-      setPomodoroSession(1);
-      setPomodoroPhase({ type: 'focus', duration: total });
-      pomodoroSessionRef.current = 1;
-      pomodoroPhaseRef.current = { type: 'focus', duration: total };
-    }
-  }, [timerMode, countdownMinutes, customMinutes, settings.focusDuration, flushActiveSegment]);
-
-  const handleModeChange = useCallback(
-    async (mode: TimerMode) => {
-      // Switching modes ends the current session cleanly first.
-      await flushActiveSegment(true);
-      if (intervalRef.current !== null) clearInterval(intervalRef.current);
-      intervalRef.current = null;
-      onTimerCompleteRef.current = null;
-      sessionClientRef.current = null;
-      setIsRunning(false);
-      setIsPaused(false);
+  const resetDisplayState = useCallback(
+    (mode: TimerMode) => {
       stopwatchStartRef.current = null;
       endTimeRef.current = null;
       pausedRemainingRef.current = 0;
       setElapsedStopwatch(0);
-      setTimerMode(mode);
 
       if (mode === 'stopwatch') {
         setRemainingTime(0);
@@ -517,52 +358,36 @@ export default function StudyTimer() {
         pomodoroPhaseRef.current = { type: 'focus', duration: total };
       }
     },
-    [flushActiveSegment, countdownMinutes, customMinutes, settings.focusDuration]
+    [countdownMinutes, customMinutes, settings.focusDuration]
   );
 
-  // Lifecycle safety net (spec #14): visibilitychange submits live; pagehide
-  // enqueues durably. Primary reliable points remain pause/stop/completion.
-  useEffect(() => {
-    const onHidden = () => {
-      if (document.visibilityState !== 'hidden') return;
-      const session = sessionClientRef.current;
-      const duration = activeSeconds();
-      if (!session || duration < MIN_SUBMIT_SECONDS) return;
-      const startedAt = segStartRef.current || new Date(Date.now() - duration * 1000).toISOString();
-      runStartRef.current = null;
-      segStartRef.current = '';
-      session.submit({ durationSeconds: duration, startedAt, completed: false })
-        .then((outcome) => {
-          if (outcome.pending) setPendingSeconds((p) => p + duration);
-          else if (outcome.recorded && outcome.ack) applyAck(outcome.ack);
-        })
-        .catch(() => setPendingSeconds((p) => p + duration));
-    };
-    const onPageHide = () => {
-      const session = sessionClientRef.current;
-      const duration = activeSeconds();
-      if (!session || duration < MIN_SUBMIT_SECONDS) return;
-      import('@/lib/client/studySubmission').then(({ enqueuePendingSegment }) => {
-        enqueuePendingSegment({
-          segmentId: session.nextSegmentId(),
-          sessionId: session.sessionId,
-          mode: timerMode,
-          subjectId: selectedSubjectId || null,
-          subjectName: selectedSubject?.name ?? null,
-          startedAt: segStartRef.current || new Date(Date.now() - duration * 1000).toISOString(),
-          endedAt: new Date().toISOString(),
-          durationSeconds: duration,
-          completed: false,
-        });
-      });
-    };
-    document.addEventListener('visibilitychange', onHidden);
-    window.addEventListener('pagehide', onPageHide);
-    return () => {
-      document.removeEventListener('visibilitychange', onHidden);
-      window.removeEventListener('pagehide', onPageHide);
-    };
-  }, [timerMode, selectedSubjectId, selectedSubject?.name, applyAck]);
+  const handleReset = useCallback(async () => {
+    // Flush open active time uncompleted so nothing studied is lost, then
+    // abandon the session without marking anything complete.
+    if (intervalRef.current !== null) clearInterval(intervalRef.current);
+    intervalRef.current = null;
+    onTimerCompleteRef.current = null;
+    await sync.pauseAndFlush();
+    sync.endSession();
+    setIsRunning(false);
+    setIsPaused(false);
+    resetDisplayState(timerMode);
+  }, [timerMode, sync, resetDisplayState]);
+
+  const handleModeChange = useCallback(
+    async (mode: TimerMode) => {
+      // Switching modes ends the current session cleanly first.
+      if (intervalRef.current !== null) clearInterval(intervalRef.current);
+      intervalRef.current = null;
+      onTimerCompleteRef.current = null;
+      await sync.stopAndClose();
+      setIsRunning(false);
+      setIsPaused(false);
+      setTimerMode(mode);
+      resetDisplayState(mode);
+    },
+    [sync, resetDisplayState]
+  );
 
   const toggleFullscreen = useCallback(async () => {
     try {
@@ -663,7 +488,7 @@ export default function StudyTimer() {
           >
             {displayTime}
           </span>
-          {timerMode === 'stopwatch' && !isFS && (
+          {(timerMode === 'stopwatch' || isFS) && (
             <span className="text-sm text-gray-500 dark:text-gray-400 mt-1">
               {isRunning ? 'Timing...' : isPaused ? 'Paused' : 'Ready'}
             </span>
@@ -673,10 +498,10 @@ export default function StudyTimer() {
 
       <div className="flex flex-col items-center gap-1">
         <div className="font-mono text-sm text-gray-600 dark:text-gray-300">
-          Studied: {formatMinutes(sessionStudiedSeconds())}
+          Studied: {formatMinutes(sync.studiedSeconds())}
           <span className="text-gray-400 dark:text-gray-500">
-            {' '}· recorded {formatMinutes(recordedSeconds)}
-            {pendingSeconds > 0 && <> · syncing {formatMinutes(pendingSeconds)}</>}
+            {' '}· recorded {formatMinutes(sync.recordedSeconds)}
+            {sync.pendingSeconds > 0 && <> · syncing {formatMinutes(sync.pendingSeconds)}</>}
           </span>
         </div>
         {selectedSubject && (
@@ -836,7 +661,7 @@ export default function StudyTimer() {
         </div>
         <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
           <div className="text-2xl font-bold text-green-600 dark:text-green-400">
-            {formatMinutes(sessionStudiedSeconds())}
+            {formatMinutes(sync.studiedSeconds())}
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
             This Session
@@ -854,22 +679,22 @@ export default function StudyTimer() {
         </div>
         <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
           <div className="text-2xl font-bold text-green-600 dark:text-green-400">
-            {stats ? formatMinutes(stats.todayStudySeconds) : '…'}
+            {sync.stats ? formatMinutes(sync.stats.todayStudySeconds) : '…'}
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Today</div>
         </div>
         <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
           <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
-            {stats ? stats.totalXp : (user?.xp ?? 0)}
+            {sync.stats ? sync.stats.totalXp : (user?.xp ?? 0)}
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Total XP</div>
         </div>
         <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
           <div className="text-2xl font-bold text-purple-600 dark:text-purple-400">
-            Level {stats ? stats.level : (user?.level ?? 1)}
+            Level {sync.stats ? sync.stats.level : (user?.level ?? 1)}
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            {stats ? `${stats.progressPercent.toFixed(0)}% to next` : ' '}
+            {sync.stats ? `${sync.stats.progressPercent.toFixed(0)}% to next` : ' '}
           </div>
         </div>
       </div>
@@ -1071,17 +896,17 @@ export default function StudyTimer() {
           </div>
         </div>
 
-        {lastAward && (
+        {sync.lastAward && (
           <div className="mb-6 rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/20 px-4 py-3 text-sm text-green-800 dark:text-green-200 flex items-center justify-between">
             <span>
-              Saved <span className="font-semibold">{formatMinutes(lastAward.seconds)}</span> of study time
+              Saved <span className="font-semibold">{formatMinutes(sync.lastAward.seconds)}</span> of study time
             </span>
-            <span className="font-bold">+{lastAward.xp} XP</span>
+            <span className="font-bold">+{sync.lastAward.xp} XP</span>
           </div>
         )}
-        {pendingSeconds > 0 && (
+        {sync.pendingSeconds > 0 && (
           <div className="mb-6 rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-200">
-            {formatMinutes(pendingSeconds)} pending sync — will save automatically when the connection recovers.
+            {formatMinutes(sync.pendingSeconds)} pending sync — will save automatically when the connection recovers.
           </div>
         )}
 

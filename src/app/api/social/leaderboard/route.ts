@@ -42,7 +42,8 @@ export async function GET(request: NextRequest) {
 
       const sql = `
         SELECT u.id, u.username, p.display_name, p.avatar_url, p.xp, p.level, p.streak,
-               COALESCE(SUM(ss.duration), 0) as study_time, p.privacy_show_leaderboard_stats
+               COALESCE(ROUND(SUM(COALESCE(ss.duration_seconds, ss.duration * 60)) / 60.0), 0) as study_time,
+               p.privacy_show_leaderboard_stats
         FROM user_profiles p
         JOIN users u ON u.id = p.user_id
         LEFT JOIN study_sessions ss ON ss.user_id = p.user_id ${timeCondition}

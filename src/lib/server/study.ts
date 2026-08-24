@@ -94,7 +94,7 @@ export function validateSegmentInput(body: SegmentInput): { ok: true; value: {
   if (!segmentId) {
     return { ok: false, error: 'segmentId is required for idempotent submission' };
   }
-  if (!/^[\w:.\-]+$/.test(segmentId)) {
+  if (!/^[\w:#.\-]+$/.test(segmentId)) {
     return { ok: false, error: 'Invalid segmentId format' };
   }
 
@@ -334,7 +334,6 @@ export async function recordStudySegment(
   const newLevel = getLevelFromXp(newXp);
   const leveledUp = newLevel > prevLevel;
 
-  const stats = await getUserStudyStats(userId);
   const streakInfo = await getStreakInfo(userId);
 
   await db.prepare(`
@@ -365,6 +364,10 @@ export async function recordStudySegment(
     )
     .run();
 
+  // Recompute AFTER the XP write so the response carries current values —
+  // clients treat this payload as authoritative (spec #16).
+  const finalStats = await getUserStudyStats(userId);
+
   // Social activity only for meaningful completions, not every pause.
   if (seg.completed) {
     const minutes = Math.max(1, Math.floor(seg.durationSeconds / 60));
@@ -394,6 +397,6 @@ export async function recordStudySegment(
     recordedSeconds: seg.durationSeconds,
     awardedXp,
     leveledUp,
-    stats,
+    stats: finalStats,
   };
 }
