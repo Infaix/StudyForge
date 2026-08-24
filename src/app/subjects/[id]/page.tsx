@@ -32,6 +32,7 @@ import {
   FlashcardDeck,
   Quiz,
   QuizResult,
+  sessionSeconds,
 } from '@/types';
 import { useParams } from 'next/navigation';
 
@@ -188,7 +189,7 @@ export default function SubjectDetailPage() {
   };
 
   const getTotalStudyMinutes = (): number => {
-    return sessions.reduce((sum, s) => sum + s.duration, 0);
+    return Math.round(sessions.reduce((sum, s) => sum + sessionSeconds(s), 0) / 60);
   };
 
   const upcomingAssessments = assessments.filter((a) => a.status === 'upcoming');
@@ -308,7 +309,7 @@ export default function SubjectDetailPage() {
                             {new Date(session.startTime).toLocaleDateString()}
                           </p>
                         </div>
-                        <Badge variant="info">{formatDuration(session.duration)}</Badge>
+                        <Badge variant="info">{formatDuration(Math.round(sessionSeconds(session) / 60))}</Badge>
                       </div>
                     );
                   })}
@@ -501,7 +502,7 @@ export default function SubjectDetailPage() {
                           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-1">{session.notes}</p>
                         )}
                       </div>
-                      <Badge variant="info">{formatDuration(session.duration)}</Badge>
+                      <Badge variant="info">{formatDuration(Math.round(sessionSeconds(session) / 60))}</Badge>
                     </div>
                   </CardContent>
                 </Card>

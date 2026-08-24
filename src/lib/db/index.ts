@@ -32,7 +32,7 @@ export const ENTITIES: Record<string, EntityConfig> = {
   },
   'study-sessions': {
     table: 'study_sessions',
-    columns: { id: 'id', subjectId: 'subject_id', topicId: 'topic_id', duration: 'duration', startTime: 'start_time', endTime: 'end_time', notes: 'notes' },
+    columns: { id: 'id', subjectId: 'subject_id', topicId: 'topic_id', duration: 'duration', durationSeconds: 'duration_seconds', segmentId: 'segment_id', mode: 'mode', completed: 'completed', createdAt: 'created_at', startTime: 'start_time', endTime: 'end_time', notes: 'notes' },
     hasUserId: true,
   },
   'study-tasks': {

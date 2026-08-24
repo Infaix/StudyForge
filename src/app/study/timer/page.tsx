@@ -5,10 +5,19 @@ import { useRouter } from 'next/navigation';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card, CardContent, Button, Input, Badge } from '@/components/ui';
 import { Dialog } from '@/components/ui/Dialog';
-import { subjectStorage, studySessionStorage, userProfileStorage } from '@/lib/storage';
+import { subjectStorage } from '@/lib/storage';
+import { Subject } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
-import { recordStudySessionComplete } from '@/lib/social/socialService';
-import { calculateXpFromDuration } from '@/lib/server/xp';
+import {
+  StudySessionClient,
+  StudyStats,
+  SegmentAck,
+  MIN_SUBMIT_SECONDS,
+  refreshUserStats,
+  flushPendingSegments,
+  getPendingSegments,
+  startPendingFlush,
+} from '@/lib/client/studySubmission';
 
 type TimerMode = 'stopwatch' | 'countdown' | 'pomodoro' | 'custom';
 
@@ -27,16 +36,6 @@ interface PomodoroPhase {
   duration: number;
 }
 
-const PRESET_SUBJECTS = [
-  'Maths Methods',
-  'Physics',
-  'English Language',
-  'Software Development',
-  'French',
-  'Vietnamese',
-  'Custom',
-] as const;
-
 const DEFAULT_SETTINGS: PomodoroSettings = {
   focusDuration: 25,
   shortBreakDuration: 5,
@@ -47,12 +46,8 @@ const DEFAULT_SETTINGS: PomodoroSettings = {
   sessionsBeforeLongBreak: 4,
 };
 
-function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-}
-
 function formatTimeHMS(totalSeconds: number): string {
-  const clamped = Math.max(0, totalSeconds);
+  const clamped = Math.max(0, Math.floor(totalSeconds));
   const h = Math.floor(clamped / 3600);
   const m = Math.floor((clamped % 3600) / 60);
   const s = clamped % 60;
@@ -62,12 +57,21 @@ function formatTimeHMS(totalSeconds: number): string {
   return `${m}:${s < 10 ? '0' : ''}${s}`;
 }
 
+function formatMinutes(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${s}s`;
+}
+
 export default function StudyTimer() {
-  const { user } = useAuth();
+  const { user, updateUser } = useAuth();
   const router = useRouter();
 
-  const [subjects, setSubjects] = useState<string[]>([]);
-  const [selectedSubject, setSelectedSubject] = useState('');
+  const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [selectedSubjectId, setSelectedSubjectId] = useState('');
   const [timerMode, setTimerMode] = useState<TimerMode>('pomodoro');
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -86,21 +90,30 @@ export default function StudyTimer() {
     duration: DEFAULT_SETTINGS.focusDuration * 60,
   });
   const [completedSessions, setCompletedSessions] = useState(0);
-  const [totalStudyTime, setTotalStudyTime] = useState(0);
 
-  // Active study time tracking
-  const [activeStudySeconds, setActiveStudySeconds] = useState(0);
-  const [currentRunStartedAt, setCurrentRunStartedAt] = useState<number | null>(null);
+  // Server-authoritative tracking state (spec #13):
+  //   recordedSeconds — acknowledged by the API/D1
+  //   pendingSeconds  — queued locally after a network failure, retrying
+  //   openRun         — measured live, submitted on pause/stop/completion
+  const [recordedSeconds, setRecordedSeconds] = useState(0);
+  const [pendingSeconds, setPendingSeconds] = useState(0);
+  const [lastAward, setLastAward] = useState<{ seconds: number; xp: number; id: number } | null>(null);
+  const [stats, setStats] = useState<StudyStats | null>(null);
 
-  const endTimeRef = useRef<number | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const stopwatchStartRef = useRef<number | null>(null);
-  const pausedRemainingRef = useRef<number>(0);
   const settingsRef = useRef<PomodoroSettings>(settings);
   const pomodoroPhaseRef = useRef<PomodoroPhase>(pomodoroPhase);
   const pomodoroSessionRef = useRef<number>(pomodoroSession);
   const onTimerCompleteRef = useRef<(() => void) | null>(null);
   const handlePomodoroPhaseCompleteRef = useRef<() => void>(() => {});
+  const sessionClientRef = useRef<StudySessionClient | null>(null);
+  const runStartRef = useRef<number | null>(null);
+  const segStartRef = useRef<string>('');
+  const endTimeRef = useRef<number | null>(null);
+  const pausedRemainingRef = useRef<number>(0);
+  const stopwatchStartRef = useRef<number | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const awardTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionTotalsRef = useRef({ seconds: 0, xp: 0 });
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -109,14 +122,13 @@ export default function StudyTimer() {
   });
 
   useEffect(() => {
-    subjectStorage.getAll().then((subs) => {
-      setSubjects(subs.map((s) => s.name));
-    });
+    subjectStorage.getAll().then(setSubjects).catch(() => {});
   }, []);
 
   useEffect(() => {
     return () => {
       if (intervalRef.current !== null) clearInterval(intervalRef.current);
+      awardTimeoutRef.current && clearTimeout(awardTimeoutRef.current);
     };
   }, []);
 
@@ -129,17 +141,101 @@ export default function StudyTimer() {
   }, []);
 
   useEffect(() => {
-    if (!user) {
-      router.push('/login');
-    }
+    if (!user) router.push('/login');
   }, [user, router]);
 
-  const clearTimerInterval = useCallback(() => {
-    if (intervalRef.current !== null) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
+  useEffect(() => {
+    if (!user) return;
+    refreshUserStats().then(setStats);
+    startPendingFlush((ack) => {
+      setPendingSeconds((p) => Math.max(0, p - ack.recordedSeconds));
+      applyAck(ack);
+    });
+    if (getPendingSegments().length > 0) flushPendingSegments();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  const selectedSubject = subjects.find((s) => s.id === selectedSubjectId) || null;
+
+  const getSubjectForSubmission = useCallback(() => ({
+    id: selectedSubjectId || undefined,
+    name: selectedSubject?.name ?? null,
+  }), [selectedSubjectId, selectedSubject]);
+
+  const applyStats = useCallback((s: StudyStats) => {
+    setStats(s);
+    updateUser({
+      xp: s.totalXp,
+      level: s.level,
+      streak: s.streak,
+      studyTimeToday: Math.floor(s.todayStudySeconds / 60),
+      studyTimeThisWeek: Math.floor(s.weekStudySeconds / 60),
+      studyTimeThisMonth: Math.floor(s.monthStudySeconds / 60),
+      studyTimeAllTime: Math.floor(s.totalStudySeconds / 60),
+    });
+  }, [updateUser]);
+
+  const applyAck = useCallback((ack: SegmentAck) => {
+    setRecordedSeconds((r) => r + ack.recordedSeconds);
+    sessionTotalsRef.current.seconds += ack.recordedSeconds;
+    sessionTotalsRef.current.xp += ack.awardedXp;
+    if (ack.stats) applyStats(ack.stats);
+    if (ack.recordedSeconds > 0 || ack.awardedXp > 0) {
+      awardTimeoutRef.current && clearTimeout(awardTimeoutRef.current);
+      setLastAward({ seconds: ack.recordedSeconds, xp: ack.awardedXp, id: Date.now() });
+      awardTimeoutRef.current = setTimeout(() => setLastAward(null), 6000);
     }
-  }, []);
+  }, [applyStats]);
+
+  /** Active (unsubmitted) seconds in the currently open run. */
+  const activeSeconds = (): number =>
+    runStartRef.current === null ? 0 : Math.floor((Date.now() - runStartRef.current) / 1000);
+
+  /** Total studied this session: acked + queued + currently accumulating. */
+  const sessionStudiedSeconds = (): number =>
+    recordedSeconds + pendingSeconds + activeSeconds();
+
+  /**
+   * Submit the open active segment to the canonical endpoint.
+   * Closes the run immediately so resumed time opens a NEW segment — making
+   * double-submission structurally impossible. Network failures land in the
+   * durable pending queue (pending sync UI), permanent rejections do not fake
+   * success.
+   */
+  const flushActiveSegment = useCallback(async (completed: boolean) => {
+    const session = sessionClientRef.current;
+    if (!session) {
+      runStartRef.current = null;
+      segStartRef.current = '';
+      return;
+    }
+    const endedAtMs = Date.now();
+    const duration = activeSeconds();
+    const startedAt = segStartRef.current || new Date(endedAtMs - duration * 1000).toISOString();
+    runStartRef.current = null;
+    segStartRef.current = '';
+
+    if (duration < MIN_SUBMIT_SECONDS) return;
+
+    try {
+      const outcome = await session.submit({
+        durationSeconds: duration,
+        startedAt,
+        endedAt: new Date(endedAtMs).toISOString(),
+        completed,
+      });
+      if (outcome.pending) {
+        setPendingSeconds((p) => p + duration);
+      } else if (outcome.recorded && outcome.ack) {
+        applyAck(outcome.ack);
+        if (outcome.ack.leveledUp && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('studyforge-levelup', { detail: { level: outcome.ack.stats.level } }));
+        }
+      }
+    } catch {
+      setPendingSeconds((p) => p + duration);
+    }
+  }, [applyAck]);
 
   const playNotificationSound = useCallback(() => {
     if (!settingsRef.current.soundEnabled) return;
@@ -160,107 +256,22 @@ export default function StudyTimer() {
     }
   }, []);
 
-  const recordStudySession = useCallback(
-    async (durationSeconds: number) => {
-      if (!user || durationSeconds <= 0 || !selectedSubject) return;
-      const now = new Date().toISOString();
-      const startTime = new Date(Date.now() - durationSeconds * 1000).toISOString();
-      const minutes = Math.floor(durationSeconds / 60);
-      const startedAt = now; // Initialize startedAt
+  /** Open a new measurement run if none is open. */
+  const openRun = () => {
+    if (runStartRef.current === null) {
+      runStartRef.current = Date.now();
+      segStartRef.current = new Date().toISOString();
+    }
+  };
 
-      // First, persist the study session to D1
-      await studySessionStorage.create({
-        id: generateId(),
-        subjectId: selectedSubject,
-        topicId: null,
-        duration: minutes,
-        startTime,
-        endTime: now,
-        notes: null,
-      });
-
-      // Then, call the server to validate and award XP atomically
-      try {
-        const submissionResponse = await fetch('/api/study/submit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({
-            durationSeconds: durationSeconds,
-            subjectId: selectedSubject ? selectedSubject : undefined,
-            subjectName: selectedSubject || undefined,
-            timerType: 'pomodoro',
-            sessionId: generateId(),
-            startedAt,
-          }),
-        });
-
-        if (!submissionResponse.ok) {
-          const errorData = await submissionResponse.json().catch(() => ({}));
-          throw new Error(errorData.error || 'Failed to submit study session');
-        }
-
-        const result = await submissionResponse.json();
-
-        // Update local state with the server-authoritative XP and level
-        // Use userProfileStorage to update the profile
-        try {
-          const profile = await userProfileStorage.get(user.id);
-          if (profile) {
-            const updatedProfile = {
-              ...profile,
-              xp: result.stats.xp,
-              level: result.stats.level,
-              studyTimeToday: result.stats.totalStudySeconds > profile.xp ? profile.studyTimeToday + minutes : profile.studyTimeToday,
-              studyTimeThisWeek: profile.studyTimeThisWeek + minutes,
-              studyTimeThisMonth: profile.studyTimeThisMonth + minutes,
-              studyTimeAllTime: result.stats.totalStudySeconds,
-            };
-            await userProfileStorage.update(updatedProfile);
-          }
-        } catch {
-          // Profile update is non-critical
-        }
-
-        // Handle level-up notification
-        const profileFromStorage = await userProfileStorage.get(user.id);
-        if (profileFromStorage) {
-          if (result.stats.leveledUp || result.stats.xp > profileFromStorage.xp) {
-            // Generate level-up activity and notification
-            // This will be handled by the social service if needed
-          }
-        }
-      } catch (error: any) {
-        console.error('Study session submission error:', error);
-        // Fallback: update local profile manually if server failed
-        try {
-          const profile = await userProfileStorage.get(user.id);
-          if (profile) {
-            await userProfileStorage.update({
-              ...profile,
-              studyTimeToday: profile.studyTimeToday + minutes,
-              studyTimeThisWeek: profile.studyTimeThisWeek + minutes,
-              studyTimeThisMonth: profile.studyTimeThisMonth + minutes,
-              studyTimeAllTime: profile.studyTimeAllTime + minutes,
-            });
-          }
-        } catch {
-          // Profile update is non-critical
-        }
-      }
-    },
-    [user, selectedSubject]
-  );
-
-  const startTimerInterval = useCallback(
-    (durationSeconds: number) => {
-      clearTimerInterval();
-      setTotalTime(durationSeconds);
+  const startInterval = useCallback(
+    (durationSeconds: number, track: boolean) => {
+      if (intervalRef.current !== null) clearInterval(intervalRef.current);
       setRemainingTime(durationSeconds);
       setIsRunning(true);
       setIsPaused(false);
-      setCurrentRunStartedAt(Date.now());
       endTimeRef.current = Date.now() + durationSeconds * 1000;
+      if (track) openRun();
 
       intervalRef.current = setInterval(() => {
         if (endTimeRef.current === null) return;
@@ -270,27 +281,25 @@ export default function StudyTimer() {
         if (left <= 0) {
           if (intervalRef.current !== null) clearInterval(intervalRef.current);
           intervalRef.current = null;
-          setIsRunning(false);
-          setIsPaused(false);
-          onTimerCompleteRef.current?.();
+          const cb = onTimerCompleteRef.current;
+          cb?.();
         }
       }, 250);
     },
-    [clearTimerInterval]
+    []
   );
 
   const startStopwatchInterval = useCallback(() => {
-    clearTimerInterval();
+    if (intervalRef.current !== null) clearInterval(intervalRef.current);
     setIsRunning(true);
     setIsPaused(false);
-    stopwatchStartRef.current = Date.now() - pausedRemainingRef.current * 1000;
-
+    stopwatchStartRef.current = Date.now() - elapsedStopwatch * 1000;
+    openRun();
     intervalRef.current = setInterval(() => {
       if (stopwatchStartRef.current === null) return;
-      const elapsed = (Date.now() - stopwatchStartRef.current) / 1000;
-      setElapsedStopwatch(elapsed);
+      setElapsedStopwatch((Date.now() - stopwatchStartRef.current) / 1000);
     }, 100);
-  }, [clearTimerInterval]);
+  }, [elapsedStopwatch]);
 
   const handlePomodoroPhaseComplete = useCallback(() => {
     const completedPhase = pomodoroPhaseRef.current;
@@ -299,9 +308,9 @@ export default function StudyTimer() {
     playNotificationSound();
 
     if (completedPhase.type === 'focus') {
-      setTotalStudyTime((p) => p + activeStudySeconds);
       setCompletedSessions((p) => p + 1);
-      recordStudySession(activeStudySeconds);
+      // Record the focus work immediately (breaks are never counted).
+      void flushActiveSegment(true);
     }
 
     const s = settingsRef.current;
@@ -324,103 +333,88 @@ export default function StudyTimer() {
     pomodoroPhaseRef.current = nextPhase;
     setRemainingTime(nextPhase.duration);
     setTotalTime(nextPhase.duration);
-    setActiveStudySeconds(0); // Reset accumulated time for next session
-    setCurrentRunStartedAt(null);
 
     const shouldAutoStart =
       completedPhase.type === 'focus' ? s.autoStartBreaks : s.autoStartFocus;
 
     if (shouldAutoStart) {
+      const track = nextPhase.type === 'focus'; // focus counts, breaks do not
       setTimeout(() => {
         onTimerCompleteRef.current = handlePomodoroPhaseCompleteRef.current;
-        startTimerInterval(nextPhase.duration);
+        startInterval(nextPhase.duration, track);
       }, 500);
     }
-  }, [playNotificationSound, recordStudySession, startTimerInterval, activeStudySeconds]);
+  }, [playNotificationSound, flushActiveSegment, startInterval]);
 
   useEffect(() => {
     handlePomodoroPhaseCompleteRef.current = handlePomodoroPhaseComplete;
   });
 
-  const handleCountdownComplete = useCallback(() => {
+  const handleCountdownComplete = useCallback(async () => {
     playNotificationSound();
     setCompletedSessions((p) => p + 1);
-    setTotalStudyTime((p) => p + activeStudySeconds);
-    recordStudySession(activeStudySeconds);
-  }, [playNotificationSound, recordStudySession, activeStudySeconds]);
+    // Natural finish: submit the final unrecorded segment, mark completed.
+    // Idempotent segmentId means a retried completion cannot award twice.
+    await flushActiveSegment(true);
+  }, [playNotificationSound, flushActiveSegment]);
 
   const handleStart = useCallback(() => {
-    if (!selectedSubject) return;
+    if (!sessionClientRef.current ||
+        (timerMode === 'pomodoro' && sessionClientRef.current.mode !== 'pomodoro')) {
+      sessionClientRef.current = new StudySessionClient(timerMode, getSubjectForSubmission);
+    }
 
     if (timerMode === 'stopwatch') {
-      pausedRemainingRef.current = elapsedStopwatch;
       startStopwatchInterval();
       return;
     }
 
     if (timerMode === 'countdown') {
-      onTimerCompleteRef.current = handleCountdownComplete;
-      startTimerInterval(countdownMinutes * 60);
+      onTimerCompleteRef.current = () => void handleCountdownComplete();
+      startInterval(countdownMinutes * 60, true);
       return;
     }
 
     if (timerMode === 'custom') {
-      onTimerCompleteRef.current = handleCountdownComplete;
-      startTimerInterval(customMinutes * 60);
+      onTimerCompleteRef.current = () => void handleCountdownComplete();
+      startInterval(customMinutes * 60, true);
       return;
     }
 
-    if (timerMode === 'pomodoro') {
-      onTimerCompleteRef.current = handlePomodoroPhaseComplete;
-      startTimerInterval(pomodoroPhase.duration);
-    }
+    // Pomodoro
+    const isFocus = pomodoroPhaseRef.current.type === 'focus';
+    onTimerCompleteRef.current = handlePomodoroPhaseComplete;
+    startInterval(pomodoroPhaseRef.current.duration, isFocus);
   }, [
-    selectedSubject,
     timerMode,
-    elapsedStopwatch,
+    getSubjectForSubmission,
     startStopwatchInterval,
-    startTimerInterval,
+    startInterval,
     countdownMinutes,
     customMinutes,
-    pomodoroPhase,
     handleCountdownComplete,
     handlePomodoroPhaseComplete,
   ]);
 
-  const handlePause = useCallback(() => {
+  const handlePause = useCallback(async () => {
     if (timerMode === 'stopwatch') {
       stopwatchStartRef.current = null;
-      // Sync accumulated study time on pause
-      const now = Date.now();
-      if (currentRunStartedAt !== null) {
-        setActiveStudySeconds((p) => p + Math.floor((now - currentRunStartedAt) / 1000));
-        setCurrentRunStartedAt(null);
-      }
-      // Immediately submit the newly accumulated study time
-      if (activeStudySeconds > 0 && selectedSubject) {
-        recordStudySession(activeStudySeconds);
-        setActiveStudySeconds(0);
-      }
+      if (intervalRef.current !== null) clearInterval(intervalRef.current);
+      intervalRef.current = null;
+      // Immediately submit the newly accumulated active study time (spec #3/#4).
+      await flushActiveSegment(false);
     } else {
       if (endTimeRef.current !== null) {
         pausedRemainingRef.current = Math.max(0, (endTimeRef.current - Date.now()) / 1000);
       }
-      // Sync accumulated study time on pause
-      const now = Date.now();
-      if (currentRunStartedAt !== null) {
-        setActiveStudySeconds((p) => p + Math.floor((now - currentRunStartedAt) / 1000));
-        setCurrentRunStartedAt(null);
-      }
-      // Immediately submit the newly accumulated study time
-      if (activeStudySeconds > 0 && selectedSubject) {
-        recordStudySession(activeStudySeconds);
-        setActiveStudySeconds(0);
-      }
+      if (intervalRef.current !== null) clearInterval(intervalRef.current);
+      intervalRef.current = null;
+      // Focus/countdown/custom pause: submit active time; break pauses are no-ops.
+      await flushActiveSegment(false);
     }
-    clearTimerInterval();
     setIsRunning(false);
     setIsPaused(true);
-  }, [timerMode, clearTimerInterval, currentRunStartedAt, activeStudySeconds, selectedSubject, recordStudySession]);
+  }, [timerMode, flushActiveSegment]);
 
   const handleResume = useCallback(() => {
     if (timerMode === 'stopwatch') {
@@ -428,15 +422,15 @@ export default function StudyTimer() {
       return;
     }
 
-    // Start new active run
-    setCurrentRunStartedAt(Date.now());
+    const remaining = pausedRemainingRef.current;
+    const track = timerMode !== 'pomodoro' || pomodoroPhaseRef.current.type === 'focus';
     setIsRunning(true);
     setIsPaused(false);
-
-    const remaining = pausedRemainingRef.current;
     endTimeRef.current = Date.now() + remaining * 1000;
     setRemainingTime(Math.ceil(remaining));
+    if (track) openRun();
 
+    if (intervalRef.current !== null) clearInterval(intervalRef.current);
     intervalRef.current = setInterval(() => {
       if (endTimeRef.current === null) return;
       const now = Date.now();
@@ -445,23 +439,18 @@ export default function StudyTimer() {
       if (left <= 0) {
         if (intervalRef.current !== null) clearInterval(intervalRef.current);
         intervalRef.current = null;
-        setIsRunning(false);
-        setIsPaused(false);
         onTimerCompleteRef.current?.();
       }
     }, 250);
   }, [timerMode, startStopwatchInterval]);
 
-  const handleReset = useCallback(() => {
-    // Finalize any remaining running interval
-    const now = Date.now();
-    if (currentRunStartedAt !== null) {
-      setActiveStudySeconds((p) => p + Math.floor((now - currentRunStartedAt) / 1000));
-      setCurrentRunStartedAt(null);
-    }
-
-    clearTimerInterval();
+  const handleReset = useCallback(async () => {
+    // Flush any open active time so nothing studied is lost, then close out.
+    await flushActiveSegment(false);
+    if (intervalRef.current !== null) clearInterval(intervalRef.current);
+    intervalRef.current = null;
     onTimerCompleteRef.current = null;
+    sessionClientRef.current = null;
     setIsRunning(false);
     setIsPaused(false);
     stopwatchStartRef.current = null;
@@ -489,12 +478,16 @@ export default function StudyTimer() {
       pomodoroSessionRef.current = 1;
       pomodoroPhaseRef.current = { type: 'focus', duration: total };
     }
-  }, [timerMode, countdownMinutes, customMinutes, settings.focusDuration, clearTimerInterval]);
+  }, [timerMode, countdownMinutes, customMinutes, settings.focusDuration, flushActiveSegment]);
 
   const handleModeChange = useCallback(
-    (mode: TimerMode) => {
-      clearTimerInterval();
+    async (mode: TimerMode) => {
+      // Switching modes ends the current session cleanly first.
+      await flushActiveSegment(true);
+      if (intervalRef.current !== null) clearInterval(intervalRef.current);
+      intervalRef.current = null;
       onTimerCompleteRef.current = null;
+      sessionClientRef.current = null;
       setIsRunning(false);
       setIsPaused(false);
       stopwatchStartRef.current = null;
@@ -524,8 +517,52 @@ export default function StudyTimer() {
         pomodoroPhaseRef.current = { type: 'focus', duration: total };
       }
     },
-    [clearTimerInterval, countdownMinutes, customMinutes, settings.focusDuration]
+    [flushActiveSegment, countdownMinutes, customMinutes, settings.focusDuration]
   );
+
+  // Lifecycle safety net (spec #14): visibilitychange submits live; pagehide
+  // enqueues durably. Primary reliable points remain pause/stop/completion.
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.visibilityState !== 'hidden') return;
+      const session = sessionClientRef.current;
+      const duration = activeSeconds();
+      if (!session || duration < MIN_SUBMIT_SECONDS) return;
+      const startedAt = segStartRef.current || new Date(Date.now() - duration * 1000).toISOString();
+      runStartRef.current = null;
+      segStartRef.current = '';
+      session.submit({ durationSeconds: duration, startedAt, completed: false })
+        .then((outcome) => {
+          if (outcome.pending) setPendingSeconds((p) => p + duration);
+          else if (outcome.recorded && outcome.ack) applyAck(outcome.ack);
+        })
+        .catch(() => setPendingSeconds((p) => p + duration));
+    };
+    const onPageHide = () => {
+      const session = sessionClientRef.current;
+      const duration = activeSeconds();
+      if (!session || duration < MIN_SUBMIT_SECONDS) return;
+      import('@/lib/client/studySubmission').then(({ enqueuePendingSegment }) => {
+        enqueuePendingSegment({
+          segmentId: session.nextSegmentId(),
+          sessionId: session.sessionId,
+          mode: timerMode,
+          subjectId: selectedSubjectId || null,
+          subjectName: selectedSubject?.name ?? null,
+          startedAt: segStartRef.current || new Date(Date.now() - duration * 1000).toISOString(),
+          endedAt: new Date().toISOString(),
+          durationSeconds: duration,
+          completed: false,
+        });
+      });
+    };
+    document.addEventListener('visibilitychange', onHidden);
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onHidden);
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, [timerMode, selectedSubjectId, selectedSubject?.name, applyAck]);
 
   const toggleFullscreen = useCallback(async () => {
     try {
@@ -549,7 +586,7 @@ export default function StudyTimer() {
 
   const getDisplayTime = (): string => {
     if (timerMode === 'stopwatch') {
-      return formatTimeHMS(Math.floor(elapsedStopwatch));
+      return formatTimeHMS(elapsedStopwatch);
     }
     return formatTimeHMS(remainingTime);
   };
@@ -634,11 +671,20 @@ export default function StudyTimer() {
         </div>
       </div>
 
-      {selectedSubject && (
-        <Badge variant="default" className={isFS ? 'text-base px-4 py-1' : ''}>
-          {selectedSubject}
-        </Badge>
-      )}
+      <div className="flex flex-col items-center gap-1">
+        <div className="font-mono text-sm text-gray-600 dark:text-gray-300">
+          Studied: {formatMinutes(sessionStudiedSeconds())}
+          <span className="text-gray-400 dark:text-gray-500">
+            {' '}· recorded {formatMinutes(recordedSeconds)}
+            {pendingSeconds > 0 && <> · syncing {formatMinutes(pendingSeconds)}</>}
+          </span>
+        </div>
+        {selectedSubject && (
+          <Badge variant="default" className={isFS ? 'text-base px-4 py-1' : ''}>
+            {selectedSubject.name}
+          </Badge>
+        )}
+      </div>
     </div>
   );
 
@@ -648,7 +694,6 @@ export default function StudyTimer() {
         <Button
           size={isFS ? 'lg' : 'md'}
           onClick={handleStart}
-          disabled={!selectedSubject}
           className={isFS ? 'px-8 py-4 text-lg' : ''}
         >
           {timerMode === 'pomodoro' && pomodoroPhase.type !== 'focus' ? 'Start Break' : 'Start'}
@@ -667,7 +712,7 @@ export default function StudyTimer() {
         <Button
           size={isFS ? 'lg' : 'md'}
           variant="secondary"
-          onClick={handlePause}
+          onClick={() => void handlePause()}
           className={isFS ? 'px-8 py-4 text-lg' : ''}
         >
           Pause
@@ -677,7 +722,7 @@ export default function StudyTimer() {
         <Button
           size={isFS ? 'lg' : 'md'}
           variant="ghost"
-          onClick={handleReset}
+          onClick={() => void handleReset()}
           className={isFS ? 'px-8 py-4 text-lg' : ''}
         >
           Reset
@@ -780,7 +825,7 @@ export default function StudyTimer() {
       <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">
         Session Stats
       </h3>
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
         <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
           <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
             {completedSessions}
@@ -791,10 +836,10 @@ export default function StudyTimer() {
         </div>
         <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
           <div className="text-2xl font-bold text-green-600 dark:text-green-400">
-            {Math.floor(totalStudyTime / 60)}m
+            {formatMinutes(sessionStudiedSeconds())}
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            Total Study Time
+            This Session
           </div>
         </div>
         <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
@@ -805,6 +850,26 @@ export default function StudyTimer() {
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
             Pomodoro Cycle
+          </div>
+        </div>
+        <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+          <div className="text-2xl font-bold text-green-600 dark:text-green-400">
+            {stats ? formatMinutes(stats.todayStudySeconds) : '…'}
+          </div>
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Today</div>
+        </div>
+        <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+          <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
+            {stats ? stats.totalXp : (user?.xp ?? 0)}
+          </div>
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Total XP</div>
+        </div>
+        <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+          <div className="text-2xl font-bold text-purple-600 dark:text-purple-400">
+            Level {stats ? stats.level : (user?.level ?? 1)}
+          </div>
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {stats ? `${stats.progressPercent.toFixed(0)}% to next` : ' '}
           </div>
         </div>
       </div>
@@ -941,24 +1006,17 @@ export default function StudyTimer() {
         Subject
       </label>
       <select
-        value={selectedSubject}
-        onChange={(e) => setSelectedSubject(e.target.value)}
-        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:border-gray-600 dark:text-white text-sm"
+        value={selectedSubjectId}
+        onChange={(e) => setSelectedSubjectId(e.target.value)}
+        disabled={isRunning}
+        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:border-gray-600 dark:text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        <option value="">Select a subject</option>
-        {PRESET_SUBJECTS.map((s) => (
-          <option key={s} value={s}>
-            {s}
+        <option value="">No subject</option>
+        {subjects.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.name}
           </option>
         ))}
-        {subjects.length > 0 && <option disabled>{'──────────'}</option>}
-        {subjects
-          .filter((s) => !(PRESET_SUBJECTS as readonly string[]).includes(s))
-          .map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
       </select>
     </div>
   );
@@ -1013,6 +1071,20 @@ export default function StudyTimer() {
           </div>
         </div>
 
+        {lastAward && (
+          <div className="mb-6 rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/20 px-4 py-3 text-sm text-green-800 dark:text-green-200 flex items-center justify-between">
+            <span>
+              Saved <span className="font-semibold">{formatMinutes(lastAward.seconds)}</span> of study time
+            </span>
+            <span className="font-bold">+{lastAward.xp} XP</span>
+          </div>
+        )}
+        {pendingSeconds > 0 && (
+          <div className="mb-6 rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-200">
+            {formatMinutes(pendingSeconds)} pending sync — will save automatically when the connection recovers.
+          </div>
+        )}
+
         <Card>
           <CardContent className="py-8">
             <div className="flex items-center gap-1 mb-8 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg">
@@ -1026,7 +1098,7 @@ export default function StudyTimer() {
               ).map(({ key, label }) => (
                 <button
                   key={key}
-                  onClick={() => handleModeChange(key)}
+                  onClick={() => void handleModeChange(key)}
                   className={`flex-1 px-3 py-2 text-sm font-medium rounded-md transition-all ${
                     timerMode === key
                       ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
@@ -1044,9 +1116,9 @@ export default function StudyTimer() {
             <div className="flex justify-center mb-8">{renderTimerDisplay(false)}</div>
             <div className="flex justify-center mb-4">{renderControls(false)}</div>
 
-            {!selectedSubject && (
+            {subjects.length === 0 && (
               <p className="text-center text-sm text-amber-600 dark:text-amber-400 mt-4">
-                Select a subject to start tracking your study session
+                Tip: create subjects to attribute your study time per subject.
               </p>
             )}
 

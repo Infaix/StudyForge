@@ -6,7 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, Progress, Badge } from '@/components/ui';
 import { userProfileStorage, studySessionStorage } from '@/lib/storage';
-import { UserProfile, StudySession } from '@/types';
+import { UserProfile, StudySession, sessionSeconds } from '@/types';
 
 interface QuickStartItem {
   label: string;
@@ -414,7 +414,7 @@ export default function StudyHub() {
                         </div>
                       </div>
                       <div className="flex items-center gap-3 flex-shrink-0">
-                        <Badge variant="default">{session.duration}m</Badge>
+                        <Badge variant="default">{Math.max(1, Math.round(sessionSeconds(session) / 60))}m</Badge>
                       </div>
                     </li>
                   ))}

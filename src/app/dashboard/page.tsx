@@ -11,7 +11,7 @@ import {
   studySessionStorage,
   studyTaskStorage,
 } from '@/lib/storage';
-import { Subject, Topic, Assessment, StudySession, StudyTask } from '@/types';
+import { Subject, Topic, Assessment, StudySession, StudyTask, sessionSeconds } from '@/types';
 import { getStudyRecommendation, type StudyRecommendation } from '@/lib/study/recommendations';
 
 function getGreeting(): string {
@@ -127,7 +127,7 @@ export default function DashboardPage() {
   const streak = useMemo(() => calculateStreak(studySessions), [studySessions]);
 
   const totalStudyMinutes = useMemo(
-    () => studySessions.reduce((sum, s) => sum + s.duration, 0),
+    () => Math.round(studySessions.reduce((sum, s) => sum + sessionSeconds(s), 0) / 60),
     [studySessions],
   );
 

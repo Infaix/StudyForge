@@ -1,27 +1,34 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, Button, Badge } from '@/components/ui';
-import { subjectStorage, studySessionStorage, userProfileStorage } from '@/lib/storage';
-import { recordStudySessionComplete } from '@/lib/social/socialService';
-import { calculateXpFromDuration } from '@/lib/server/xp';
+import { subjectStorage } from '@/lib/storage';
+import { Subject } from '@/types';
+import {
+  StudySessionClient,
+  StudyStats,
+  SegmentAck,
+  MIN_SUBMIT_SECONDS,
+  refreshUserStats,
+  flushPendingSegments,
+  getPendingSegments,
+  startPendingFlush,
+  enqueuePendingSegment,
+} from '@/lib/client/studySubmission';
 
-const DEFAULT_SUBJECTS = [
-  'Maths Methods',
-  'Physics',
-  'English Language',
-  'Software Development',
-  'French',
-  'Vietnamese',
+const DEFAULT_SUBJECTS: Subject[] = [
+  { id: '', name: 'Maths Methods', colour: '#3b82f6', icon: '📐', createdAt: '' },
+  { id: '', name: 'Physics', colour: '#8b5cf6', icon: '⚛️', createdAt: '' },
+  { id: '', name: 'English Language', colour: '#22c55e', icon: '📖', createdAt: '' },
+  { id: '', name: 'Software Development', colour: '#f59e0b', icon: '💻', createdAt: '' },
 ];
 
 interface Lap {
   id: number;
   time: number;
-  timestamp: number;
 }
 
 function formatTime(totalSeconds: number): string {
@@ -36,323 +43,274 @@ function formatTime(totalSeconds: number): string {
 }
 
 function formatTimeShort(totalSeconds: number): string {
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  const s = Math.floor(totalSeconds % 60);
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
   if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
-
-function getTodayKey(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function getWeekStart(): string {
-  const d = new Date();
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  d.setDate(diff);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-async function loadDailyStats(): Promise<{ totalTime: number; sessionCount: number }> {
-  const today = getTodayKey();
-  try {
-    const res = await fetch('/api/data/study-sessions', { credentials: 'include' });
-    if (!res.ok) return { totalTime: 0, sessionCount: 0 };
-    const sessions: Array<{ startTime: string; duration: number }> = await res.json();
-    const todaySessions = sessions.filter((s) => s.startTime && s.startTime.startsWith(today));
-    return {
-      totalTime: todaySessions.reduce((sum, s) => sum + (s.duration || 0), 0) * 60,
-      sessionCount: todaySessions.length,
-    };
-  } catch {
-    return { totalTime: 0, sessionCount: 0 };
-  }
-}
-
-async function loadWeekStats(): Promise<number> {
-  const weekStart = getWeekStart();
-  try {
-    const res = await fetch('/api/data/study-sessions', { credentials: 'include' });
-    if (!res.ok) return 0;
-    const sessions: Array<{ startTime: string; duration: number }> = await res.json();
-    return sessions
-      .filter((s) => s.startTime && s.startTime >= weekStart)
-      .reduce((sum, s) => sum + (s.duration || 0), 0) * 60;
-  } catch {
-    return 0;
-  }
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
 }
 
 export default function StudyStopwatch() {
-  const { user } = useAuth();
+  const { user, updateUser } = useAuth();
   const router = useRouter();
 
-  const [subjects, setSubjects] = useState<string[]>(DEFAULT_SUBJECTS);
-  const [selectedSubject, setSelectedSubject] = useState('');
+  const [subjects, setSubjects] = useState<Subject[]>(DEFAULT_SUBJECTS);
+  const [selectedSubjectId, setSelectedSubjectId] = useState('');
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [totalTime, setTotalTime] = useState(0);
   const [laps, setLaps] = useState<Lap[]>([]);
-  const [currentLapStart, setCurrentLapStart] = useState(0);
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
 
-  // Active study time tracking
-  const [activeStudySeconds, setActiveStudySeconds] = useState(0);
-  const [currentRunStartedAt, setCurrentRunStartedAt] = useState<number | null>(null);
+  // Two-concept tracking (spec #13):
+  //   recorded  — seconds acknowledged by the server
+  //   active    — seconds since the most recent resume (never yet submitted)
+  const [recordedSeconds, setRecordedSeconds] = useState(0);
+  const [pendingSeconds, setPendingSeconds] = useState(0); // queued, awaiting retry
+  const [lastAward, setLastAward] = useState<{ seconds: number; xp: number; id: number } | null>(null);
+  const [showSummary, setShowSummary] = useState<{ seconds: number; xp: number } | null>(null);
 
-  const [dailyStats, setDailyStats] = useState({ totalTime: 0, sessionCount: 0 });
-  const [weeklyTotal, setWeeklyTotal] = useState(0);
+  const [stats, setStats] = useState<StudyStats | null>(null);
+  const [, setTick] = useState(0); // re-render for the running clock
 
-  const startTimeRef = useRef<number | null>(null);
-  const pausedElapsedRef = useRef<number>(0);
+  const sessionRef = useRef<StudySessionClient | null>(null);
+  const runStartRef = useRef<number | null>(null); // ms timestamp of current active run
+  const segStartRef = useRef<string>(''); // ISO start of the open segment
+  const lapAnchorRef = useRef<number>(0); // displayed elapsed at last lap
+  const lapCounterRef = useRef(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const lapCounterRef = useRef<number>(0);
-  const currentLapStartRef = useRef<number>(0);
+  const awardTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionTotalsRef = useRef({ seconds: 0, xp: 0 }); // acked totals for this session
 
   useEffect(() => {
-    if (!user) {
-      router.push('/login');
-    }
+    if (!user) router.push('/login');
   }, [user, router]);
 
+  // Load real subjects (ids required for subject attribution server-side).
   useEffect(() => {
-    const loadSubjects = async () => {
-      try {
-        const stored = await subjectStorage.getAll();
-        if (stored.length > 0) {
-          setSubjects(stored.map((s) => s.name));
-        }
-      } catch {}
-    };
-    loadSubjects();
+    subjectStorage.getAll().then((stored) => {
+      if (stored.length > 0) setSubjects(stored);
+    }).catch(() => {});
   }, []);
 
-  useEffect(() => {
-    const loadStats = async () => {
-      setDailyStats(await loadDailyStats());
-      setWeeklyTotal(await loadWeekStats());
-    };
-    loadStats();
-  }, []);
+  // Authoritative stats straight from D1.
+  const applyStats = useCallback((s: StudyStats | null) => {
+    if (!s) return;
+    setStats(s);
+    updateUser({
+      xp: s.totalXp,
+      level: s.level,
+      streak: s.streak,
+      studyTimeToday: Math.floor(s.todayStudySeconds / 60),
+      studyTimeThisWeek: Math.floor(s.weekStudySeconds / 60),
+      studyTimeThisMonth: Math.floor(s.monthStudySeconds / 60),
+      studyTimeAllTime: Math.floor(s.totalStudySeconds / 60),
+    });
+  }, [updateUser]);
 
   useEffect(() => {
-    return () => {
-      if (intervalRef.current !== null) {
-        clearInterval(intervalRef.current);
-      }
-    };
+    if (!user) return;
+    refreshUserStats().then(setStats);
+    startPendingFlush((ack) => {
+      // A queued segment just made it to the server.
+      setPendingSeconds((p) => Math.max(0, p - ack.recordedSeconds));
+      applyStatsFromAck(ack);
+    });
+    if (getPendingSegments().length > 0) {
+      flushPendingSegments();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  const applyStatsFromAck = useCallback((ack: SegmentAck) => {
+    setRecordedSeconds((r) => r + ack.recordedSeconds);
+    sessionTotalsRef.current.seconds += ack.recordedSeconds;
+    sessionTotalsRef.current.xp += ack.awardedXp;
+    if (ack.stats) applyStats(ack.stats);
+    if (ack.recordedSeconds > 0 || ack.awardedXp > 0) {
+      awardTimeoutRef.current && clearTimeout(awardTimeoutRef.current);
+      setLastAward({ seconds: ack.recordedSeconds, xp: ack.awardedXp, id: Date.now() });
+      awardTimeoutRef.current = setTimeout(() => setLastAward(null), 6000);
+    }
+  }, [applyStats]);
+
+  const selectedSubject = subjects.find((s) => s.id === selectedSubjectId) || null;
+
+  const getSubjectForSubmission = useCallback(() => ({
+    id: selectedSubjectId || undefined,
+    name: selectedSubject?.name ?? null,
+  }), [selectedSubjectId, selectedSubject]);
+
+  /** Active (unrecorded) seconds in the currently open run. */
+  const activeSeconds = useCallback((): number => {
+    if (runStartRef.current === null) return 0;
+    return Math.floor((Date.now() - runStartRef.current) / 1000);
   }, []);
 
-  const tick = () => {
-    if (startTimeRef.current === null) return;
-    const now = Date.now();
-    // Only count active running time, not paused time
-    const elapsed = (now - startTimeRef.current) / 1000 + pausedElapsedRef.current;
-    setTotalTime(elapsed);
+  /** Displayed clock: everything recorded plus the open active run. */
+  const displayedSeconds = useCallback((): number => {
+    return recordedSeconds + pendingSeconds + activeSeconds();
+  }, [recordedSeconds, pendingSeconds, activeSeconds]);
+
+  const stopClockInterval = () => {
+    if (intervalRef.current !== null) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
   };
 
+  /**
+   * Submit the open segment ("active" time since last resume) to the server.
+   * On success the seconds move into `recorded`; on network failure they move
+   * into the durable pending queue and surface as "pending sync" — never lost,
+   * never double-counted (unique segmentId per submission).
+   */
+  const flushActiveSegment = useCallback(async (completed: boolean): Promise<void> => {
+    const session = sessionRef.current;
+    if (!session) return;
+    const endedAtMs = Date.now();
+    const duration = activeSeconds();
+    const startedAt = segStartRef.current || new Date(endedAtMs - duration * 1000).toISOString();
+
+    // Close the run immediately regardless of outcome — resuming opens a new
+    // segment, so there is no path that submits these seconds twice.
+    runStartRef.current = null;
+    segStartRef.current = '';
+
+    if (duration < MIN_SUBMIT_SECONDS) {
+      // Too short to persist on its own; nothing recorded (spec: no fake saves).
+      return;
+    }
+
+    try {
+      const outcome = await session.submit({
+        durationSeconds: duration,
+        startedAt,
+        endedAt: new Date(endedAtMs).toISOString(),
+        completed,
+      });
+      if (outcome.pending) {
+        setPendingSeconds((p) => p + duration);
+      } else if (outcome.recorded && outcome.ack) {
+        applyStatsFromAck(outcome.ack);
+        if (outcome.ack.leveledUp && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('studyforge-levelup', { detail: { level: outcome.ack.stats.level } }));
+        }
+      }
+    } catch {
+      setPendingSeconds((p) => p + duration);
+    }
+  }, [activeSeconds, applyStatsFromAck]);
+
   const startTimer = () => {
-    if (intervalRef.current !== null) clearInterval(intervalRef.current);
-    startTimeRef.current = Date.now();
-    pausedElapsedRef.current = 0;
-    currentLapStartRef.current = 0;
+    stopClockInterval();
+    sessionRef.current = new StudySessionClient('stopwatch', getSubjectForSubmission);
+    lapAnchorRef.current = 0;
     lapCounterRef.current = 0;
+    sessionTotalsRef.current = { seconds: 0, xp: 0 };
     setLaps([]);
-    setCurrentLapStart(0);
+    setRecordedSeconds(0);
+    runStartRef.current = Date.now();
+    segStartRef.current = new Date().toISOString();
     setIsRunning(true);
     setIsPaused(false);
-    intervalRef.current = setInterval(tick, 50);
+    intervalRef.current = setInterval(() => setTick((t) => t + 1), 250);
   };
 
   const pauseTimer = async () => {
-    if (intervalRef.current !== null) clearInterval(intervalRef.current);
-    // Sync accumulated active study time on pause
-    const now = Date.now();
-    if (currentRunStartedAt !== null) {
-      setActiveStudySeconds((p) => p + Math.floor((now - currentRunStartedAt) / 1000));
-      setCurrentRunStartedAt(null);
-    }
-    // Immediately submit the newly accumulated study time
-    if (activeStudySeconds > 0 && selectedSubject) {
-      const minutes = Math.floor(activeStudySeconds / 60);
-      try {
-        const submissionResponse = await fetch('/api/study/submit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({
-            durationSeconds: activeStudySeconds,
-            subjectId: selectedSubject || undefined,
-            subjectName: selectedSubject || 'Study',
-            timerType: 'stopwatch',
-            sessionId: `stopwatch-${Date.now()}`,
-            startedAt: new Date(Date.now() - activeStudySeconds * 1000).toISOString(),
-          }),
-        });
-
-        if (!submissionResponse.ok) {
-          const errorData = await submissionResponse.json().catch(() => ({}));
-          throw new Error(errorData.error || 'Failed to submit study session');
-        }
-
-        const result = await submissionResponse.json();
-
-        // Update local state with server-authoritative data
-        setActiveStudySeconds(0);
-        setCurrentRunStartedAt(null);
-
-        // Update XP and level from server response
-        try {
-          const profile = await userProfileStorage.get(user!.id);
-          if (profile) {
-            const updatedProfile = {
-              ...profile,
-              xp: result.stats.xp,
-              level: result.stats.level,
-              studyTimeToday: result.stats.totalStudySeconds > profile.studyTimeToday ? profile.studyTimeToday + minutes : profile.studyTimeToday,
-              studyTimeThisWeek: profile.studyTimeThisWeek + minutes,
-              studyTimeThisMonth: profile.studyTimeThisMonth + minutes,
-              studyTimeAllTime: result.stats.totalStudySeconds,
-            };
-            await userProfileStorage.update(updatedProfile);
-          }
-        } catch {
-          // Profile update is non-critical
-        }
-      } catch (err) {
-        console.error('Failed to save session:', err);
-      }
-    }
-    pausedElapsedRef.current = totalTime;
-    setIsPaused(true);
+    stopClockInterval();
     setIsRunning(false);
+    setIsPaused(true);
+    await flushActiveSegment(false);
   };
 
   const resumeTimer = () => {
-    if (intervalRef.current !== null) clearInterval(intervalRef.current);
-    // Start new active run
-    setCurrentRunStartedAt(Date.now());
-    startTimeRef.current = Date.now();
+    stopClockInterval();
+    runStartRef.current = Date.now();
+    segStartRef.current = new Date().toISOString();
     setIsRunning(true);
     setIsPaused(false);
-    intervalRef.current = setInterval(tick, 50);
+    intervalRef.current = setInterval(() => setTick((t) => t + 1), 250);
   };
 
-  const resetTimer = () => {
-    // Finalize any remaining running interval
-    const now = Date.now();
-    if (currentRunStartedAt !== null) {
-      setActiveStudySeconds((p) => p + Math.floor((now - currentRunStartedAt) / 1000));
-      setCurrentRunStartedAt(null);
-    }
-
-    if (intervalRef.current !== null) clearInterval(intervalRef.current);
-    const sessionTime = totalTime;
+  /** Stop: submit remaining active time (completed=true) and close the session. */
+  const stopTimer = async () => {
+    stopClockInterval();
     setIsRunning(false);
     setIsPaused(false);
-    setTotalTime(0);
-    setLaps([]);
-    setCurrentLapStart(0);
-    startTimeRef.current = null;
-    pausedElapsedRef.current = 0;
-    currentLapStartRef.current = 0;
-    lapCounterRef.current = 0;
-
-    if (sessionTime > 0.5) {
-      loadDailyStats().then(setDailyStats);
-      loadWeekStats().then(setWeeklyTotal);
-      setShowSaveDialog(true);
+    await flushActiveSegment(true);
+    sessionRef.current = null;
+    if (sessionTotalsRef.current.seconds > 0 || sessionTotalsRef.current.xp > 0) {
+      setShowSummary({ ...sessionTotalsRef.current });
     }
   };
 
   const recordLap = () => {
     if (!isRunning) return;
-    const now = Date.now();
-    const lapElapsed = (now - (startTimeRef.current ?? now)) / 1000 + pausedElapsedRef.current - currentLapStartRef.current;
-
-    const newLap: Lap = {
-      id: lapCounterRef.current + 1,
-      time: lapElapsed,
-      timestamp: Date.now(),
-    };
+    const elapsed = displayedSeconds();
+    const lapTime = elapsed - lapAnchorRef.current;
+    lapAnchorRef.current = elapsed;
     lapCounterRef.current += 1;
-    currentLapStartRef.current = (now - (startTimeRef.current ?? now)) / 1000 + pausedElapsedRef.current;
-    setCurrentLapStart(currentLapStartRef.current);
-    setLaps((prev) => [newLap, ...prev]);
+    setLaps((prev) => [{ id: lapCounterRef.current, time: lapTime }, ...prev]);
   };
 
-  const currentLapTime = isRunning
-    ? totalTime - currentLapStart
-    : isPaused
-    ? totalTime - currentLapStart
-    : 0;
+  // Lifecycle safety net (spec #14): never rely on beforeunload alone.
+  useEffect(() => {
+    const activeDuration = () =>
+      runStartRef.current === null ? 0 : Math.floor((Date.now() - runStartRef.current) / 1000);
 
-  const bestLap = laps.length > 0 ? laps.reduce((best, lap) => (lap.time < best.time ? lap : best), laps[0]) : null;
+    const onHidden = () => {
+      if (document.visibilityState !== 'hidden') return;
+      const session = sessionRef.current;
+      const duration = activeDuration();
+      if (!session || duration < MIN_SUBMIT_SECONDS) return;
+      const startedAt = segStartRef.current || new Date(Date.now() - duration * 1000).toISOString();
+      // Close the run so a later resume opens a fresh segment (no double count).
+      runStartRef.current = null;
+      segStartRef.current = '';
+      session.submit({ durationSeconds: duration, startedAt, completed: false })
+        .then((outcome) => {
+          if (outcome.pending) setPendingSeconds((p) => p + duration);
+          else if (outcome.recorded && outcome.ack) applyStatsFromAck(outcome.ack);
+        })
+        .catch(() => setPendingSeconds((p) => p + duration));
+    };
 
-  const handleSaveSession = async () => {
-    if (!user) return;
-    // Use activeStudySeconds (excludes paused time) instead of totalTime
-    const durationSeconds = activeStudySeconds;
-    const minutes = Math.floor(durationSeconds / 60);
-    try {
-      const submissionResponse = await fetch('/api/study/submit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          durationSeconds: durationSeconds,
-          subjectId: selectedSubject || undefined,
-          subjectName: selectedSubject || 'Study',
-          timerType: 'stopwatch',
-          sessionId: `stopwatch-${Date.now()}`,
-          startedAt: durationSeconds > 0 ? new Date(Date.now() - durationSeconds * 1000).toISOString() : new Date().toISOString(),
-        }),
+    const onPageHide = () => {
+      const session = sessionRef.current;
+      const duration = activeDuration();
+      if (!session || duration < MIN_SUBMIT_SECONDS) return;
+      enqueuePendingSegment({
+        segmentId: session.nextSegmentId(),
+        sessionId: session.sessionId,
+        mode: 'stopwatch',
+        subjectId: selectedSubjectId || null,
+        subjectName: selectedSubject?.name ?? null,
+        startedAt: segStartRef.current || new Date(Date.now() - duration * 1000).toISOString(),
+        endedAt: new Date().toISOString(),
+        durationSeconds: duration,
+        completed: false,
       });
+    };
 
-      if (!submissionResponse.ok) {
-        const errorData = await submissionResponse.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Failed to submit study session');
-      }
+    document.addEventListener('visibilitychange', onHidden);
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onHidden);
+      window.removeEventListener('pagehide', onPageHide);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSubjectId, selectedSubject?.name, applyStatsFromAck]);
 
-      const result = await submissionResponse.json();
+  useEffect(() => () => {
+    stopClockInterval();
+    awardTimeoutRef.current && clearTimeout(awardTimeoutRef.current);
+  }, []);
 
-      // Update local state with server-authoritative data
-      setActiveStudySeconds(0);
-      setCurrentRunStartedAt(null);
-
-      // Update XP and level from server response
-      try {
-        const profile = await userProfileStorage.get(user!.id);
-        if (profile) {
-          const updatedProfile = {
-            ...profile,
-            xp: result.stats.xp,
-            level: result.stats.level,
-            studyTimeToday: result.stats.totalStudySeconds > profile.studyTimeToday ? profile.studyTimeToday + minutes : profile.studyTimeToday,
-            studyTimeThisWeek: profile.studyTimeThisWeek + minutes,
-            studyTimeThisMonth: profile.studyTimeThisMonth + minutes,
-            studyTimeAllTime: result.stats.totalStudySeconds,
-          };
-          await userProfileStorage.update(updatedProfile);
-        }
-      } catch {
-        // Profile update is non-critical
-      }
-    } catch (err) {
-      console.error('Failed to save session:', err);
-    }
-    setShowSaveDialog(false);
-    loadDailyStats().then(setDailyStats);
-    loadWeekStats().then(setWeeklyTotal);
-  };
-
-  const handleDiscardSession = () => {
-    setShowSaveDialog(false);
-  };
+  const currentLapTime = displayedSeconds() - lapAnchorRef.current;
+  const bestLap = laps.length > 0 ? laps.reduce((best, lap) => (lap.time < best.time ? lap : best), laps[0]) : null;
+  const hasUnsavedWork =
+    isRunning || isPaused || recordedSeconds > 0 || pendingSeconds > 0;
 
   if (!user) return null;
 
@@ -364,9 +322,23 @@ export default function StudyStopwatch() {
             Study Stopwatch
           </h1>
           {selectedSubject && (
-            <Badge variant="info">{selectedSubject}</Badge>
+            <Badge variant="info">{selectedSubject.name}</Badge>
           )}
         </div>
+
+        {lastAward && (
+          <div className="rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/20 px-4 py-3 text-sm text-green-800 dark:text-green-200 flex items-center justify-between">
+            <span>
+              Saved <span className="font-semibold">{formatTimeShort(lastAward.seconds)}</span> of study time
+            </span>
+            <span className="font-bold">+{lastAward.xp} XP</span>
+          </div>
+        )}
+        {pendingSeconds > 0 && (
+          <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-200">
+            {formatTimeShort(pendingSeconds)} pending sync — will be saved automatically when the connection recovers.
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
@@ -374,20 +346,24 @@ export default function StudyStopwatch() {
               <CardContent className="py-8">
                 <div className="text-center">
                   <div className="text-7xl md:text-8xl font-mono font-bold text-gray-900 dark:text-white tracking-wider mb-2">
-                    {formatTime(totalTime)}
+                    {formatTime(displayedSeconds())}
+                  </div>
+                  <div className="text-sm text-gray-500 dark:text-gray-400 font-mono">
+                    Recorded: {formatTime(recordedSeconds)}
+                    {pendingSeconds > 0 && <> · Pending: {formatTime(pendingSeconds)}</>}
                   </div>
                   {isRunning && (
-                    <div className="text-lg font-mono text-blue-600 dark:text-blue-400">
+                    <div className="text-lg font-mono text-blue-600 dark:text-blue-400 mt-1">
                       Lap: {formatTime(currentLapTime)}
                     </div>
                   )}
                   {isPaused && (
-                    <div className="text-lg font-mono text-yellow-600 dark:text-yellow-400">
+                    <div className="text-lg font-mono text-yellow-600 dark:text-yellow-400 mt-1">
                       Paused
                     </div>
                   )}
                   {!isRunning && !isPaused && (
-                    <div className="text-lg text-gray-400 dark:text-gray-500">
+                    <div className="text-lg text-gray-400 dark:text-gray-500 mt-1">
                       Ready
                     </div>
                   )}
@@ -396,64 +372,32 @@ export default function StudyStopwatch() {
             </Card>
 
             <div className="grid grid-cols-3 gap-3">
-              {!isRunning && !isPaused && (
-                <Button
-                  onClick={startTimer}
-                  variant="primary"
-                  size="lg"
-                  className="col-span-3"
-                >
+              {!hasUnsavedWork ? (
+                <Button onClick={startTimer} variant="primary" size="lg" className="col-span-3">
                   Start
                 </Button>
-              )}
-              {isRunning && (
+              ) : isRunning ? (
                 <>
-                  <Button
-                    onClick={pauseTimer}
-                    variant="secondary"
-                    size="lg"
-                  >
+                  <Button onClick={pauseTimer} variant="secondary" size="lg">
                     Pause
                   </Button>
-                  <Button
-                    onClick={recordLap}
-                    variant="ghost"
-                    size="lg"
-                  >
+                  <Button onClick={recordLap} variant="ghost" size="lg">
                     Lap
                   </Button>
-                  <Button
-                    onClick={resetTimer}
-                    variant="ghost"
-                    size="lg"
-                  >
-                    Reset
+                  <Button onClick={stopTimer} variant="ghost" size="lg">
+                    Stop
                   </Button>
                 </>
-              )}
-              {isPaused && (
+              ) : (
                 <>
-                  <Button
-                    onClick={resumeTimer}
-                    variant="primary"
-                    size="lg"
-                  >
+                  <Button onClick={resumeTimer} variant="primary" size="lg">
                     Resume
                   </Button>
-                  <Button
-                    onClick={recordLap}
-                    variant="ghost"
-                    size="lg"
-                    disabled
-                  >
+                  <Button onClick={() => {}} variant="ghost" size="lg" disabled>
                     Lap
                   </Button>
-                  <Button
-                    onClick={resetTimer}
-                    variant="ghost"
-                    size="lg"
-                  >
-                    Reset
+                  <Button onClick={stopTimer} variant="ghost" size="lg">
+                    Stop
                   </Button>
                 </>
               )}
@@ -467,15 +411,15 @@ export default function StudyStopwatch() {
               </CardHeader>
               <CardContent>
                 <select
-                  value={selectedSubject}
-                  onChange={(e) => setSelectedSubject(e.target.value)}
+                  value={selectedSubjectId}
+                  onChange={(e) => setSelectedSubjectId(e.target.value)}
                   disabled={isRunning}
                   className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:border-gray-600 dark:text-white disabled:opacity-50 disabled:cursor-not-allowed text-base"
                 >
-                  <option value="">Select a subject</option>
+                  <option value="">No subject</option>
                   {subjects.map((subject) => (
-                    <option key={subject} value={subject}>
-                      {subject}
+                    <option key={subject.id || subject.name} value={subject.id}>
+                      {subject.name}
                     </option>
                   ))}
                 </select>
@@ -494,24 +438,28 @@ export default function StudyStopwatch() {
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-gray-600 dark:text-gray-400">Current Session</span>
                   <span className="font-mono font-semibold text-gray-900 dark:text-white">
-                    {formatTimeShort(totalTime)}
+                    {formatTimeShort(displayedSeconds())}
                   </span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-gray-600 dark:text-gray-400">Today</span>
                   <span className="font-mono font-semibold text-gray-900 dark:text-white">
-                    {formatTimeShort(dailyStats.totalTime)}
+                    {stats ? formatTimeShort(stats.todayStudySeconds) : '…'}
                   </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600 dark:text-gray-400">Sessions Today</span>
-                  <Badge variant="success">{dailyStats.sessionCount}</Badge>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-gray-600 dark:text-gray-400">This Week</span>
                   <span className="font-mono font-semibold text-gray-900 dark:text-white">
-                    {formatTimeShort(weeklyTotal)}
+                    {stats ? formatTimeShort(stats.weekStudySeconds) : '…'}
                   </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-gray-600 dark:text-gray-400">Total XP</span>
+                  <Badge variant="success">{stats ? stats.totalXp : user.xp}</Badge>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-gray-600 dark:text-gray-400">Level</span>
+                  <Badge variant="info">{stats ? stats.level : user.level}</Badge>
                 </div>
               </CardContent>
             </Card>
@@ -563,36 +511,44 @@ export default function StudyStopwatch() {
           </div>
         </div>
 
-        {showSaveDialog && (
+        {showSummary && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
             <Card className="w-full max-w-md mx-4">
               <CardHeader>
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-                  Save Session?
+                  Session Saved
                 </h3>
               </CardHeader>
               <CardContent className="space-y-4">
                 <p className="text-sm text-gray-600 dark:text-gray-400">
-                  You studied for <span className="font-semibold text-gray-900 dark:text-white">{formatTimeShort(totalTime)}</span>
+                  You studied for{' '}
+                  <span className="font-semibold text-gray-900 dark:text-white">
+                    {formatTimeShort(showSummary.seconds)}
+                  </span>
                   {selectedSubject && (
-                    <> in <span className="font-semibold text-gray-900 dark:text-white">{selectedSubject}</span></>
+                    <> in <span className="font-semibold text-gray-900 dark:text-white">{selectedSubject.name}</span></>
                   )}
-                  . Would you like to save this session?
+                  . Your study time and XP were saved to your account.
                 </p>
-                {laps.length > 0 && (
-                  <p className="text-sm text-gray-500 dark:text-gray-400">
-                    {laps.length} lap{laps.length !== 1 ? 's' : ''} recorded
-                    {bestLap && <> — best: {formatTime(bestLap.time)}</>}
+                {pendingSeconds > 0 && (
+                  <p className="text-sm text-yellow-700 dark:text-yellow-300">
+                    {formatTimeShort(pendingSeconds)} is still syncing and will be retried automatically.
                   </p>
                 )}
-                <div className="flex gap-3">
-                  <Button onClick={handleSaveSession} variant="primary" className="flex-1">
-                    Save Session
-                  </Button>
-                  <Button onClick={handleDiscardSession} variant="ghost" className="flex-1">
-                    Discard
-                  </Button>
-                </div>
+                <Button
+                  onClick={() => {
+                    setShowSummary(null);
+                    setRecordedSeconds(0);
+                    sessionTotalsRef.current = { seconds: 0, xp: 0 };
+                    setPendingSeconds(getPendingSegments().reduce((sum, s) => sum + s.durationSeconds, 0));
+                    setLaps([]);
+                    refreshUserStats().then(setStats);
+                  }}
+                  variant="primary"
+                  className="w-full"
+                >
+                  Done
+                </Button>
               </CardContent>
             </Card>
           </div>

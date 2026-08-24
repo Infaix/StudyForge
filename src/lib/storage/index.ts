@@ -71,8 +71,24 @@ export const studySessionStorage = {
   create: (session: StudySession) => apiPost('/api/data/study-sessions', session),
   update: (session: StudySession) => apiPut(`/api/data/study-sessions/${session.id}`, session),
   delete: (id: string) => apiDelete(`/api/data/study-sessions/${id}`),
-  complete: (session: StudySession, subjectName?: string) =>
-    apiPost('/api/study/sessions/complete', { duration: session.duration, subjectId: session.subjectId ?? null, sessionId: session.id, notes: session.notes, startTime: session.startTime }),
+  /**
+   * Canonical study-time submission (server validates, awards XP in D1).
+   * duration is interpreted as SECONDS here; pass segmentId for idempotency.
+   */
+  complete: (
+    session: Pick<StudySession, 'duration' | 'subjectId' | 'id' | 'notes' | 'startTime'>,
+    options?: { segmentId?: string; mode?: 'stopwatch' | 'countdown' | 'pomodoro' | 'custom'; completed?: boolean }
+  ) =>
+    apiPost('/api/study/sessions/complete', {
+      sessionId: session.id,
+      segmentId: options?.segmentId ?? session.id,
+      mode: options?.mode ?? 'custom',
+      subjectId: session.subjectId ?? null,
+      subjectName: null,
+      startedAt: session.startTime,
+      durationSeconds: session.duration,
+      completed: options?.completed ?? true,
+    }),
 };
 
 export const studyTaskStorage = {

@@ -30,10 +30,23 @@ export interface StudySession {
   id: string;
   subjectId: string;
   topicId: string | null;
+  /** Legacy duration in minutes (manual sessions). */
   duration: number;
+  /** Exact seconds for timer-recorded segments; preferred over duration. */
+  durationSeconds?: number | null;
+  segmentId?: string | null;
+  mode?: string;
+  completed?: boolean | number;
+  createdAt?: string | null;
   startTime: string;
   endTime: string;
   notes: string | null;
+}
+
+/** Effective study seconds of a session row (seconds preferred, minutes fallback). */
+export function sessionSeconds(s: Pick<StudySession, 'durationSeconds' | 'duration'>): number {
+  if (typeof s.durationSeconds === 'number' && s.durationSeconds > 0) return s.durationSeconds;
+  return (s.duration || 0) * 60;
 }
 
 export interface StudyTask {
