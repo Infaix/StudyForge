@@ -40,7 +40,20 @@ const okAck = (segmentId: string) => ({
   recordedSeconds: 60,
   awardedXp: 1,
   leveledUp: false,
-  stats: {},
+  stats: {
+    totalStudySeconds: 60,
+    todayStudySeconds: 60,
+    weekStudySeconds: 60,
+    monthStudySeconds: 60,
+    studySessionCount: 1,
+    completedSessionCount: 0,
+    totalXp: 1,
+    level: 1,
+    xpIntoLevel: 1,
+    xpForNextLevel: 100,
+    progressPercent: 1,
+    streak: 0,
+  },
 });
 
 describe('studySubmission transport', () => {
@@ -149,6 +162,47 @@ describe('studySubmission transport', () => {
     expect(warnSpy).toHaveBeenCalled();
   });
 
+  it('queues segments when the server has a transient fault (5xx) and retries them', async () => {
+    // Regression guard for the silent-data-loss bug: a 500 used to be treated
+    // as a permanent rejection and the studied time was dropped forever.
+    const { StudySessionClient, flushPendingSegments, getPendingSegments } = await loadModule();
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ success: false, error: 'D1 unavailable' }), { status: 500 })
+    );
+
+    const client = new StudySessionClient('pomodoro', () => ({ id: undefined, name: null }), 's5xx');
+    const outcome = await client.submit({
+      durationSeconds: 1500,
+      startedAt: new Date(Date.now() - 1_500_000).toISOString(),
+    });
+
+    expect(outcome.pending).toBe(true);
+    expect(getPendingSegments()).toHaveLength(1);
+
+    // Server recovers → the SAME segment is retried and acknowledged.
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(okAck('s5xx#1')), { status: 200 })
+    );
+    const acked = await flushPendingSegments();
+    expect(acked).toBe(1);
+    expect(fetchMock.mock.calls[1][1].body).toContain('"segmentId":"s5xx#1"');
+    expect(getPendingSegments()).toHaveLength(0);
+  });
+
+  it('treats 429 rate limiting as retryable', async () => {
+    const { StudySessionClient, getPendingSegments } = await loadModule();
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ success: false, error: 'Too many requests' }), { status: 429 })
+    );
+    const client = new StudySessionClient('stopwatch', () => ({ id: undefined, name: null }), 's429');
+    const outcome = await client.submit({
+      durationSeconds: 60,
+      startedAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    expect(outcome.pending).toBe(true);
+    expect(getPendingSegments()).toHaveLength(1);
+  });
+
   it('keeps unacked segments when some flushes fail mid-batch', async () => {
     const { enqueuePendingSegment, flushPendingSegments, getPendingSegments } = await loadModule();
 
@@ -185,6 +239,7 @@ describe('studySubmission transport', () => {
       weekStudySeconds: 486,
       monthStudySeconds: 486,
       studySessionCount: 3,
+      completedSessionCount: 1,
       totalXp: 8,
       level: 1,
       xpIntoLevel: 8,

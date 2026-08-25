@@ -4,7 +4,6 @@ import {
   StudyActivity,
   Notification,
   XpTransaction,
-  StudySession,
   PrivacySettings,
   DEFAULT_PRIVACY_SETTINGS,
 } from '@/types';
@@ -605,33 +604,6 @@ export async function awardXP(
   }
 
   return { newTotal, newLevel, leveledUp };
-}
-
-export async function recordStudySessionComplete(
-  userId: string,
-  session: StudySession,
-  subjectName: string
-): Promise<void> {
-  const profile = await getProfileById(userId);
-  if (!profile) return;
-
-  const minutes = session.duration;
-  const xpAmount = Math.max(10, minutes * 2);
-
-  await api(`/api/data/user-profiles/${userId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      studyTimeToday: profile.studyTimeToday + minutes,
-      studyTimeThisWeek: profile.studyTimeThisWeek + minutes,
-      studyTimeThisMonth: profile.studyTimeThisMonth + minutes,
-      studyTimeAllTime: profile.studyTimeAllTime + minutes,
-      updatedAt: new Date().toISOString(),
-    }),
-  });
-
-  await awardXP(userId, xpAmount, `Studied ${subjectName} for ${minutes} minutes`, session.id);
-  await generateActivity(userId, 'study_session', `Studied ${subjectName}`, `Completed a ${minutes}-minute study session`, minutes, xpAmount, session.subjectId, { sessionId: session.id });
 }
 
 export function formatTimeAgo(dateStr: string): string {

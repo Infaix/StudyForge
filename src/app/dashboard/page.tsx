@@ -38,28 +38,6 @@ function daysUntil(dateStr: string): number {
   return Math.ceil((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 
-function calculateStreak(sessions: StudySession[]): number {
-  if (sessions.length === 0) return 0;
-  const sorted = [...sessions].sort(
-    (a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime(),
-  );
-  let streak = 0;
-  let current = new Date();
-  current.setHours(0, 0, 0, 0);
-  for (const session of sorted) {
-    const d = new Date(session.startTime);
-    d.setHours(0, 0, 0, 0);
-    const diff = Math.floor((current.getTime() - d.getTime()) / (1000 * 60 * 60 * 24));
-    if (diff === streak) {
-      streak++;
-      current = d;
-    } else if (diff > streak) {
-      break;
-    }
-  }
-  return streak;
-}
-
 function SkeletonCard({ className = '' }: { className?: string }) {
   return (
     <div
@@ -90,7 +68,7 @@ function LoadingSkeleton() {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { statsRevision } = useAuth();
+  const { user, statsRevision } = useAuth();
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [assessments, setAssessments] = useState<Assessment[]>([]);
@@ -126,7 +104,9 @@ export default function DashboardPage() {
   }, [loadData, statsRevision]);
   useLivePageRefresh(loadData);
 
-  const streak = useMemo(() => calculateStreak(studySessions), [studySessions]);
+  // Server-authoritative streak (same source as Study Hub / Session Stats);
+  // kept current via the auth context's statsRevision refresh cycle.
+  const streak = user?.streak ?? 0;
 
   const totalStudyMinutes = useMemo(
     () => Math.round(studySessions.reduce((sum, s) => sum + sessionSeconds(s), 0) / 60),

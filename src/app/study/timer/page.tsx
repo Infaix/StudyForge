@@ -7,7 +7,7 @@ import { Card, CardContent, Button, Input, Badge } from '@/components/ui';
 import { Dialog } from '@/components/ui/Dialog';
 import { subjectStorage } from '@/lib/storage';
 import { Subject } from '@/types';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth, useLivePageRefresh } from '@/contexts/AuthContext';
 import { useStudyTimeSync } from '@/lib/client/useStudyTimeSync';
 
 type TimerMode = 'stopwatch' | 'countdown' | 'pomodoro' | 'custom';
@@ -131,6 +131,12 @@ export default function StudyTimer() {
       () => ({ id: selectedSubjectId || undefined, name: selectedSubject?.name ?? null }),
       [selectedSubjectId, selectedSubject]
     ),
+  });
+
+  // Returning to this tab/page re-syncs stats read-only (never creates
+  // records) so the panel never shows stale values after bfcache restore.
+  useLivePageRefresh(() => {
+    void sync.refreshStatsNow();
   });
 
   const playNotificationSound = useCallback(() => {
@@ -645,7 +651,19 @@ export default function StudyTimer() {
     return null;
   };
 
-  const renderStats = () => (
+  const renderStats = () => {
+    // '…' is reserved for a genuinely in-flight first stats load. Once the
+    // load has completed we always render real numbers: server-authoritative
+    // values when available, otherwise the synced context values.
+    const statsLoading = !sync.statsLoaded;
+    const stats = sync.stats;
+    // Completed work units: server count (finished countdowns / pomodoro
+    // focus units) merged with this sitting's local counter so unacked units
+    // are never undercounted mid-session.
+    const sessionsCompleted = stats
+      ? Math.max(stats.completedSessionCount, completedSessions)
+      : completedSessions;
+    return (
     <div className="mt-8 pt-6 border-t border-gray-200 dark:border-gray-700">
       <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">
         Session Stats
@@ -653,7 +671,7 @@ export default function StudyTimer() {
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
         <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
           <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
-            {completedSessions}
+            {sessionsCompleted}
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
             Sessions Completed
@@ -679,27 +697,32 @@ export default function StudyTimer() {
         </div>
         <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
           <div className="text-2xl font-bold text-green-600 dark:text-green-400">
-            {sync.stats ? formatMinutes(sync.stats.todayStudySeconds) : '…'}
+            {statsLoading
+              ? '…'
+              : stats
+                ? formatMinutes(stats.todayStudySeconds)
+                : formatMinutes((user?.studyTimeToday ?? 0) * 60)}
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Today</div>
         </div>
         <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
           <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
-            {sync.stats ? sync.stats.totalXp : (user?.xp ?? 0)}
+            {statsLoading ? '…' : (stats?.totalXp ?? user?.xp ?? 0)}
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Total XP</div>
         </div>
         <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
           <div className="text-2xl font-bold text-purple-600 dark:text-purple-400">
-            Level {sync.stats ? sync.stats.level : (user?.level ?? 1)}
+            {statsLoading ? '…' : `Level ${stats?.level ?? user?.level ?? 1}`}
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            {sync.stats ? `${sync.stats.progressPercent.toFixed(0)}% to next` : ' '}
+            {stats ? `${stats.progressPercent.toFixed(0)}% to next` : ''}
           </div>
         </div>
       </div>
     </div>
-  );
+    );
+  };
 
   const renderSettingsPanel = () => (
     <Dialog isOpen={showSettings} onClose={() => setShowSettings(false)} title="Timer Settings">

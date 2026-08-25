@@ -24,6 +24,7 @@ export interface StudyStats {
   weekStudySeconds: number;
   monthStudySeconds: number;
   studySessionCount: number;
+  completedSessionCount: number;
   totalXp: number;
   level: number;
   xpIntoLevel: number;
@@ -112,6 +113,28 @@ export function enqueuePendingSegment(
   setPendingSegments(queue);
 }
 
+/**
+ * Server refused the segment with an HTTP status. Carries the status so
+ * callers can distinguish definitive validation failures (4xx) from
+ * transient server faults (5xx/429), which MUST be retried — dropping them
+ * silently is how study time used to vanish without a trace.
+ */
+export class HttpRejectionError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'HttpRejectionError';
+    this.status = status;
+  }
+}
+
+/** Transient failures (network errors and server-side faults) are retryable. */
+function isRetryableFailure(err: unknown): boolean {
+  if (err instanceof TypeError) return true; // fetch network-level failure
+  if (err instanceof HttpRejectionError) return err.status >= 500 || err.status === 429;
+  return false;
+}
+
 async function postSegment(segment: PendingSegment): Promise<SegmentAck> {
   const res = await fetch('/api/study/sessions/complete', {
     method: 'POST',
@@ -131,7 +154,7 @@ async function postSegment(segment: PendingSegment): Promise<SegmentAck> {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data?.success) {
-    throw new Error(data?.error || `Submission failed (${res.status})`);
+    throw new HttpRejectionError(res.status, data?.error || `Submission failed (${res.status})`);
   }
   return data as SegmentAck;
 }
@@ -160,12 +183,13 @@ export async function flushPendingSegments(
       });
       onAck?.(ack);
     } catch (err) {
-      if (err instanceof TypeError) {
-        // Network-level failure: keep for later retry.
+      if (isRetryableFailure(err)) {
+        // Network failure or transient server fault: keep for later retry.
         remaining.push({ ...segment, attempts: segment.attempts + 1 });
       } else {
         // Server rejected permanently (validation/auth). Drop the segment but
         // never mark the time as recorded in the UI — it simply wasn't saved.
+        devLog('segment rejected permanently', { segmentId: segment.segmentId });
         console.warn('Segment rejected permanently:', segment.segmentId, err);
       }
     }
@@ -274,17 +298,23 @@ export class StudySessionClient {
       });
       return { recorded: true, ack, pending: false };
     } catch (err) {
-      if (err instanceof TypeError) {
-        // Network failure: durable queue, safe to retry (idempotent segmentId).
+      if (isRetryableFailure(err)) {
+        // Network failure or transient server fault (5xx/429): durable queue,
+        // safe to retry (idempotent segmentId).
         const queue = getPendingSegments();
         if (!queue.some((s) => s.segmentId === segment.segmentId)) {
           queue.push(segment);
           setPendingSegments(queue);
         }
-        devLog('segment queued offline', { segmentId: segment.segmentId, durationSeconds: segment.durationSeconds });
+        devLog('segment queued for retry', {
+          segmentId: segment.segmentId,
+          durationSeconds: segment.durationSeconds,
+          status: err instanceof HttpRejectionError ? err.status : 'network',
+        });
         return { recorded: false, ack: null, pending: true };
       }
       // Permanent rejection (validation/auth): do not queue, do not fake success.
+      devLog('segment rejected permanently', { segmentId: segment.segmentId });
       console.error('Segment rejected:', err);
       return { recorded: false, ack: null, pending: false };
     } finally {

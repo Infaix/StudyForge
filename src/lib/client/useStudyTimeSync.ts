@@ -93,6 +93,10 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
   const [pendingSeconds, setPendingSeconds] = useState(0);
   const [lastAward, setLastAward] = useState<{ seconds: number; xp: number; id: number } | null>(null);
   const [stats, setStats] = useState<StudyStats | null>(null);
+  /** True once the first authoritative stats read has COMPLETED (success or
+   * failure). UIs use this to show a real loading indicator only while a
+   * load is genuinely in flight, never as a permanent '…'. */
+  const [statsLoaded, setStatsLoaded] = useState(false);
   const [syncing, setSyncing] = useState(0);
   const [offline, setOffline] = useState(
     typeof navigator !== 'undefined' ? navigator.onLine === false : false
@@ -343,8 +347,12 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
   const refreshStatsNow = useCallback(async () => {
     // Context refresh: reads /api/study/stats, applies to shared state and
     // bumps statsRevision (read-only — never creates records).
-    const s = await ctxRefreshStats();
-    if (s) setStats(s);
+    try {
+      const s = await ctxRefreshStats();
+      if (s) setStats(s);
+    } finally {
+      setStatsLoaded(true);
+    }
   }, [ctxRefreshStats]);
 
   /** Totals accumulated (acked) during this session, for summary UIs. */
@@ -380,9 +388,11 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
     }
 
     // 2. Show authoritative stats immediately (context applies + notifies).
-    ctxRefreshStats().then((s) => {
-      if (s) setStats(s);
-    });
+    ctxRefreshStats()
+      .then((s) => {
+        if (s) setStats(s);
+      })
+      .finally(() => setStatsLoaded(true));
 
     // 3. Retry queue: background + on reconnect.
     startPendingFlush((ack) => applyAck(ack));
@@ -483,6 +493,7 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
     pendingSeconds,
     lastAward,
     stats,
+    statsLoaded,
     // actions
     beginSession,
     openRun,

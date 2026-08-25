@@ -26,6 +26,8 @@ export interface StudyStats {
   weekStudySeconds: number;
   monthStudySeconds: number;
   studySessionCount: number;
+  /** Segments explicitly marked completed (finished countdowns / pomodoro focus units). */
+  completedSessionCount: number;
   totalXp: number;
   level: number;
   xpIntoLevel: number;
@@ -169,7 +171,8 @@ export async function getUserStudyStats(userId: string): Promise<StudyStats> {
       COALESCE(SUM(CASE WHEN ss.start_time >= ?1 THEN ${EFFECTIVE_SECONDS_SQL} ELSE 0 END), 0) AS today_seconds,
       COALESCE(SUM(CASE WHEN ss.start_time >= ?2 THEN ${EFFECTIVE_SECONDS_SQL} ELSE 0 END), 0) AS week_seconds,
       COALESCE(SUM(CASE WHEN ss.start_time >= ?3 THEN ${EFFECTIVE_SECONDS_SQL} ELSE 0 END), 0) AS month_seconds,
-      COUNT(*) AS session_count
+      COUNT(*) AS session_count,
+      COALESCE(SUM(CASE WHEN ss.completed = 1 THEN 1 ELSE 0 END), 0) AS completed_session_count
     FROM study_sessions ss WHERE ss.user_id = ?4
   `)
     .bind(todayStartIso, weekStartIso, monthStartIso, userId)
@@ -179,6 +182,7 @@ export async function getUserStudyStats(userId: string): Promise<StudyStats> {
       week_seconds: number;
       month_seconds: number;
       session_count: number;
+      completed_session_count: number;
     }>();
 
   const profile = await db.prepare(
@@ -196,6 +200,7 @@ export async function getUserStudyStats(userId: string): Promise<StudyStats> {
     weekStudySeconds: agg?.week_seconds ?? 0,
     monthStudySeconds: agg?.month_seconds ?? 0,
     studySessionCount: agg?.session_count ?? 0,
+    completedSessionCount: agg?.completed_session_count ?? 0,
     totalXp,
     level,
     xpIntoLevel,
