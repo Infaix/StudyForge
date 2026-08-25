@@ -159,9 +159,22 @@ async function postSegment(segment: PendingSegment): Promise<SegmentAck> {
   return data as SegmentAck;
 }
 
-/** Try to flush any segments stranded by earlier failures. Returns acked count. */
+/** Why a queued entry was removed WITHOUT a successful acknowledgement. */
+export type QueueDropReason = 'auth' | 'rejected';
+
+/**
+ * Try to flush any segments stranded by earlier failures.
+ *
+ * - `onAck` fires for every segment the server acknowledged (fresh or
+ *   duplicate) so callers can reconcile state and clear "pending".
+ * - `onDrop` fires when an entry must be removed without an ack: either the
+ *   session is invalid (`'auth'`) or the server definitively rejected the
+ *   payload (`'rejected'`). Callers MUST reconcile their pending view on
+ *   drops too — otherwise the UI stays stuck in "pending" forever.
+ */
 export async function flushPendingSegments(
-  onAck?: (ack: SegmentAck) => void
+  onAck?: (ack: SegmentAck) => void,
+  onDrop?: (segment: PendingSegment, reason: QueueDropReason, error: unknown) => void
 ): Promise<number> {
   let acked = 0;
   let queue = getPendingSegments();
@@ -187,10 +200,19 @@ export async function flushPendingSegments(
         // Network failure or transient server fault: keep for later retry.
         remaining.push({ ...segment, attempts: segment.attempts + 1 });
       } else {
-        // Server rejected permanently (validation/auth). Drop the segment but
-        // never mark the time as recorded in the UI — it simply wasn't saved.
-        devLog('segment rejected permanently', { segmentId: segment.segmentId });
-        console.warn('Segment rejected permanently:', segment.segmentId, err);
+        // Definitive rejection. Auth problems are distinct: retrying cannot
+        // succeed until the user signs in again.
+        const reason: QueueDropReason =
+          err instanceof HttpRejectionError && (err.status === 401 || err.status === 403)
+            ? 'auth'
+            : 'rejected';
+        devLog('queue entry dropped', {
+          segmentId: segment.segmentId,
+          reason,
+          status: err instanceof HttpRejectionError ? err.status : 'unknown',
+        });
+        console.warn('Segment dropped from queue:', segment.segmentId, reason, err);
+        onDrop?.(segment, reason, err);
       }
     }
   }
@@ -202,20 +224,23 @@ export async function flushPendingSegments(
 let flushTimerStarted = false;
 
 /** Start best-effort background retries (page load + periodic). Idempotent. */
-export function startPendingFlush(onAck?: (ack: SegmentAck) => void): void {
+export function startPendingFlush(
+  onAck?: (ack: SegmentAck) => void,
+  onDrop?: (segment: PendingSegment, reason: QueueDropReason, error: unknown) => void
+): void {
   if (flushTimerStarted || typeof window === 'undefined') return;
   flushTimerStarted = true;
   window.addEventListener('online', () => {
-    flushPendingSegments(onAck).catch(() => {});
+    flushPendingSegments(onAck, onDrop).catch(() => {});
   });
   window.setInterval(() => {
     if (getPendingSegments().length > 0 && navigator.onLine !== false) {
-      flushPendingSegments(onAck).catch(() => {});
+      flushPendingSegments(onAck, onDrop).catch(() => {});
     }
   }, 30_000);
   if (getPendingSegments().length > 0) {
     // Give the auth context a moment to settle first.
-    window.setTimeout(() => flushPendingSegments(onAck).catch(() => {}), 3000);
+    window.setTimeout(() => flushPendingSegments(onAck, onDrop).catch(() => {}), 3000);
   }
 }
 

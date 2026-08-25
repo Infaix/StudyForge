@@ -507,7 +507,7 @@ export default function StudyTimer() {
           Studied: {formatMinutes(sync.studiedSeconds())}
           <span className="text-gray-400 dark:text-gray-500">
             {' '}· recorded {formatMinutes(sync.recordedSeconds)}
-            {sync.pendingSeconds > 0 && <> · syncing {formatMinutes(sync.pendingSeconds)}</>}
+            {sync.pendingSeconds > 0 && <> · pending {formatMinutes(sync.pendingSeconds)}</>}
           </span>
         </div>
         {selectedSubject && (

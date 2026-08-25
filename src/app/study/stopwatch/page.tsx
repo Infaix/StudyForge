@@ -49,7 +49,7 @@ const SYNC_LABELS: Record<SyncStatus, string> = {
   idle: '',
   syncing: 'Syncing…',
   synced: 'Synced',
-  pending: 'Offline — will sync',
+  pending: 'Pending sync',
   offline: 'Offline — will sync',
 };
 
@@ -178,11 +178,23 @@ export default function StudyStopwatch() {
             <span className="font-bold">+{sync.lastAward.xp} XP</span>
           </div>
         )}
-        {sync.pendingSeconds > 0 && (
-          <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-200">
-            {formatTimeShort(sync.pendingSeconds)} pending sync — will be saved automatically when the connection recovers.
+        {sync.lastProblem === 'auth' ? (
+          <div className="rounded-lg border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-900/20 px-4 py-3 text-sm text-red-800 dark:text-red-200">
+            Session expired — please sign in again to sync your study time.
           </div>
-        )}
+        ) : sync.pendingSeconds > 0 && sync.status === 'offline' ? (
+          <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-200">
+            {formatTimeShort(sync.pendingSeconds)} pending sync — will retry automatically when your connection is restored.
+          </div>
+        ) : sync.lastProblem === 'server' && (sync.pendingSeconds > 0 || sync.queuedCount > 0) ? (
+          <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-200">
+            Sync temporarily unavailable — we&apos;ll retry automatically ({formatTimeShort(sync.pendingSeconds)} waiting).
+          </div>
+        ) : sync.pendingSeconds > 0 ? (
+          <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-200">
+            {formatTimeShort(sync.pendingSeconds)} pending sync — will retry automatically when your connection is restored.
+          </div>
+        ) : null}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">

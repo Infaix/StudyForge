@@ -12,10 +12,13 @@ import {
   getPendingSegments,
   startPendingFlush,
   enqueuePendingSegment,
+  QueueDropReason,
 } from './studySubmission';
 import { devLog } from './devLog';
 
 export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'pending' | 'offline';
+/** Distinct failure classes so the UI can show accurate sync messages. */
+export type SyncProblem = 'auth' | 'server' | 'network' | null;
 
 /**
  * Centralised study-time persistence for ALL timer modes (spec #26).
@@ -102,6 +105,7 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
     typeof navigator !== 'undefined' ? navigator.onLine === false : false
   );
   const [queuedCount, setQueuedCount] = useState(0);
+  const [lastProblem, setLastProblem] = useState<SyncProblem>(null);
 
   // Mirrors of state usable inside callbacks without stale closures.
   const recordedRef = useRef(0);
@@ -178,6 +182,8 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
       setPendingSeconds(pendingRef.current);
       sessionTotalsRef.current.seconds += ack.recordedSeconds;
       sessionTotalsRef.current.xp += ack.awardedXp;
+      // A successful acknowledgement proves connectivity + auth are fine.
+      setLastProblem(null);
       applyStats(ack.stats);
       setQueuedCount(getPendingSegments().length);
       if (ack.recordedSeconds > 0 || ack.awardedXp > 0) {
@@ -189,6 +195,43 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
     },
     [applyStats, persistSnapshot]
   );
+
+  /**
+   * Recompute the pending view from the durable queue — THE source of truth
+   * for "how much is waiting". Every flush path ends here so no success,
+   * drop or failure can ever leave phantom "pending" state behind.
+   */
+  const reconcilePendingFromQueue = useCallback(() => {
+    const queue = getPendingSegments();
+    const total = queue.reduce((sum, s) => sum + s.durationSeconds, 0);
+    pendingRef.current = total;
+    setPendingSeconds(total);
+    setQueuedCount(queue.length);
+  }, []);
+
+  const handleQueueDrop = useCallback(
+    (_segment: { segmentId: string }, reason: QueueDropReason) => {
+      if (reason === 'auth') setLastProblem('auth');
+      // 'rejected' entries are gone from the queue; reconciliation below
+      // clears their seconds from the pending view.
+    },
+    []
+  );
+
+  /**
+   * The ONE queue-flush entry point used by mount recovery, reconnects and
+   * the background retry loop: acks update state, drops are classified, and
+   * the pending view is ALWAYS reconciled afterwards.
+   */
+  const runQueueFlush = useCallback(async (): Promise<void> => {
+    try {
+      await flushPendingSegments((ack) => applyAck(ack), handleQueueDrop);
+    } catch {
+      // Never let a flush error escape; reconciliation below keeps truth.
+    } finally {
+      reconcilePendingFromQueue();
+    }
+  }, [applyAck, handleQueueDrop, reconcilePendingFromQueue]);
 
   async function trackInflight<T>(fn: () => Promise<T>): Promise<T> {
     inflightCountRef.current += 1;
@@ -245,9 +288,9 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
           completed,
         });
         if (outcome.pending) {
-          pendingRef.current += duration;
-          setPendingSeconds(pendingRef.current);
-          setQueuedCount(getPendingSegments().length);
+          // submit() has already durably queued it; reconcile to queue truth.
+          setLastProblem(offline ? 'network' : 'server');
+          reconcilePendingFromQueue();
           persistSnapshot();
         } else if (outcome.recorded && outcome.ack) {
           devLog('study segment acknowledged', {
@@ -264,17 +307,21 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
           }
         }
       } catch {
-        pendingRef.current += duration;
-        setPendingSeconds(pendingRef.current);
-        persistSnapshot();
+        // Unexpected failure escaping submit(): reconcile to whatever the
+        // durable queue holds so the pending view can never drift.
+        setLastProblem(offline ? 'network' : 'server');
+        reconcilePendingFromQueue();
       }
     }).finally(() => {
       flushPromiseRef.current = null;
+      // Single coordinator guarantee: after ANY submission attempt (pause,
+      // checkpoint, completion) the pending view matches the durable queue.
+      reconcilePendingFromQueue();
     });
 
     flushPromiseRef.current = promise;
     return promise;
-  }, [applyAck, persistSnapshot]);
+  }, [applyAck, persistSnapshot, reconcilePendingFromQueue, offline]);
 
   // ------------------------------------------------------------- session API
 
@@ -381,8 +428,8 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
           durationSeconds: elapsed,
           completed: false,
         });
-        pendingRef.current += elapsed;
-        setPendingSeconds(pendingRef.current);
+        // Queue now holds the orphan; derive the pending view from it.
+        reconcilePendingFromQueue();
       }
       saveSnapshot({ ...snap, runStartedAt: null, segStartIso: null, paused: true, savedAt: Date.now() });
     }
@@ -394,16 +441,18 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
       })
       .finally(() => setStatsLoaded(true));
 
-    // 3. Retry queue: background + on reconnect.
-    startPendingFlush((ack) => applyAck(ack));
+    // 3. Retry queue: background + on reconnect. ALL flush paths go through
+    //    runQueueFlush so acks apply AND the pending view always reconciles —
+    //    a successful retry can never leave "pending" stuck on screen.
+    startPendingFlush((ack) => applyAck(ack), handleQueueDrop);
     if (getPendingSegments().length > 0) {
-      flushPendingSegments().catch(() => {});
+      void runQueueFlush();
     }
 
     const goOffline = () => setOffline(true);
     const goOnline = () => {
       setOffline(false);
-      flushPendingSegments((ack) => applyAck(ack)).catch(() => {});
+      void runQueueFlush();
     };
     window.addEventListener('offline', goOffline);
     window.addEventListener('online', goOnline);
@@ -494,6 +543,8 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
     lastAward,
     stats,
     statsLoaded,
+    lastProblem,
+    queuedCount,
     // actions
     beginSession,
     openRun,

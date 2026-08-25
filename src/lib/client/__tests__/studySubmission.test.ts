@@ -203,6 +203,50 @@ describe('studySubmission transport', () => {
     expect(getPendingSegments()).toHaveLength(1);
   });
 
+  it('reports auth problems distinctly when dropping unretryable entries', async () => {
+    const { enqueuePendingSegment, flushPendingSegments, getPendingSegments } = await loadModule();
+    enqueuePendingSegment({
+      segmentId: 'auth-1#1', sessionId: 'auth-1', mode: 'stopwatch', subjectId: null,
+      subjectName: null, startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
+      durationSeconds: 120, completed: false,
+    });
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ success: false, error: 'Unauthenticated' }), { status: 401 })
+    );
+
+    const drops: Array<{ id: string; reason: string }> = [];
+    const acked = await flushPendingSegments(undefined, (seg, reason) => {
+      drops.push({ id: seg.segmentId, reason });
+    });
+
+    // Retry cannot succeed until re-login: entry is removed, caller is told WHY.
+    expect(acked).toBe(0);
+    expect(drops).toEqual([{ id: 'auth-1#1', reason: 'auth' }]);
+    expect(getPendingSegments()).toHaveLength(0);
+  });
+
+  it('reports validation rejections and empties the queue so pending state clears', async () => {
+    const { enqueuePendingSegment, flushPendingSegments, getPendingSegments } = await loadModule();
+    enqueuePendingSegment({
+      segmentId: 'bad-1#1', sessionId: 'bad-1', mode: 'stopwatch', subjectId: null,
+      subjectName: null, startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
+      durationSeconds: 90, completed: false,
+    });
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ success: false, error: 'Invalid payload' }), { status: 422 })
+    );
+
+    const drops: Array<{ id: string; reason: string }> = [];
+    const acked = await flushPendingSegments(undefined, (seg, reason) => {
+      drops.push({ id: seg.segmentId, reason });
+    });
+
+    expect(acked).toBe(0);
+    expect(drops).toEqual([{ id: 'bad-1#1', reason: 'rejected' }]);
+    // Queue empty afterwards — the hook's reconciliation clears "pending".
+    expect(getPendingSegments()).toHaveLength(0);
+  });
+
   it('keeps unacked segments when some flushes fail mid-batch', async () => {
     const { enqueuePendingSegment, flushPendingSegments, getPendingSegments } = await loadModule();
 
