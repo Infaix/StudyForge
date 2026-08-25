@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth, useLivePageRefresh } from '@/contexts/AuthContext';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, Progress, Badge } from '@/components/ui';
 import { userProfileStorage, studySessionStorage } from '@/lib/storage';
@@ -253,46 +253,40 @@ function formatSessionDate(iso: string): string {
 }
 
 export default function StudyHub() {
-  const { user } = useAuth();
+  const { user, statsRevision } = useAuth();
   const router = useRouter();
 
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [recentSessions, setRecentSessions] = useState<StudySession[]>([]);
 
+  const loadData = React.useCallback(async () => {
+    try {
+      const [loadedProfile, allSessions] = await Promise.all([
+        userProfileStorage.get('current-user'),
+        studySessionStorage.getAll(),
+      ]);
+
+      setProfile(loadedProfile);
+
+      const sorted = allSessions
+        .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())
+        .slice(0, 5);
+      setRecentSessions(sorted);
+    } catch (err) {
+      console.error('Failed to load study hub data:', err);
+    }
+  }, []);
+
+  // Refetch authoritative data on mount, whenever persisted stats change
+  // (e.g. a timer ack elsewhere), and on tab return / bfcache restore / reconnect.
   useEffect(() => {
     if (!user) {
       router.push('/login');
       return;
     }
-
-    let mounted = true;
-
-    const loadData = async () => {
-      try {
-        const [loadedProfile, allSessions] = await Promise.all([
-          userProfileStorage.get('current-user'),
-          studySessionStorage.getAll(),
-        ]);
-
-        if (!mounted) return;
-
-        setProfile(loadedProfile);
-
-        const sorted = allSessions
-          .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())
-          .slice(0, 5);
-        setRecentSessions(sorted);
-      } catch (err) {
-        console.error('Failed to load study hub data:', err);
-      }
-    };
-
     loadData();
-
-    return () => {
-      mounted = false;
-    };
-  }, [user, router]);
+  }, [user, router, loadData, statsRevision]);
+  useLivePageRefresh(loadData);
 
   if (!user) return null;
 

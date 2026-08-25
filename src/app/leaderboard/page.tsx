@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth, useLivePageRefresh } from '@/contexts/AuthContext';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card, CardContent, Button, Badge, Progress } from '@/components/ui';
 import { userProfileStorage } from '@/lib/storage';
@@ -23,7 +23,7 @@ function getRankDisplay(rank: number): string {
 }
 
 export default function LeaderboardPage() {
-  const { user } = useAuth();
+  const { user, statsRevision } = useAuth();
   const router = useRouter();
 
   const [mounted, setMounted] = useState(false);
@@ -67,7 +67,8 @@ export default function LeaderboardPage() {
 
   useEffect(() => {
     if (mounted && user) loadLeaderboard();
-  }, [loadLeaderboard, mounted, user]);
+  }, [loadLeaderboard, mounted, user, statsRevision]);
+  useLivePageRefresh(loadLeaderboard);
 
   const maxXP = entries.length > 0 ? Math.max(...entries.map((e) => {
     if (category === 'xp') return e.xp;

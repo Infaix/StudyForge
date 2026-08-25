@@ -3,8 +3,9 @@ import { XP_CONFIG, getLevelFromXp, getStreakInfo } from './xp';
 
 export type StudyMode = 'stopwatch' | 'countdown' | 'pomodoro' | 'custom';
 
-/** Smallest segment we will persist (filters out accidental double-clicks). */
-export const MIN_SEGMENT_SECONDS = 15;
+/** Smallest segment we will persist (filters out accidental double-clicks,
+ * while still recording genuinely short study bursts — spec #12). */
+export const MIN_SEGMENT_SECONDS = 5;
 
 export interface SegmentInput {
   sessionId?: string;

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth, useLivePageRefresh } from '@/contexts/AuthContext';
 import {
   Card,
   CardContent,
@@ -74,7 +74,7 @@ function compressImage(file: File): Promise<string> {
 }
 
 export default function ProfilePage() {
-  const { user, signOut } = useAuth();
+  const { user, signOut, statsRevision } = useAuth();
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -95,38 +95,40 @@ export default function ProfilePage() {
 
   useEffect(() => { setMounted(true); }, []);
 
+  const loadProfile = React.useCallback(async () => {
+    try {
+      const [storedProfile, storedSessions, storedSubjects] = await Promise.all([
+        userProfileStorage.get('current-user'),
+        studySessionStorage.getAll(),
+        subjectStorage.getAll(),
+      ]);
+
+      if (storedProfile) {
+        const migrated = {
+          ...storedProfile,
+          bio: storedProfile.bio ?? '',
+          privacy: storedProfile.privacy ?? { ...DEFAULT_PRIVACY_SETTINGS },
+        };
+        setProfile(migrated);
+        setDisplayName(migrated.displayName || '');
+        setUsername(migrated.username || '');
+        setBio(migrated.bio || '');
+      }
+      setSessions(storedSessions);
+      setSubjects(storedSubjects);
+    } catch (err) {
+      console.error('Failed to load profile data:', err);
+    }
+  }, []);
+
+  // Refetch authoritative data on mount, on stats revision changes (timer
+  // acks), tab return / bfcache restore / reconnect.
   useEffect(() => {
     if (!mounted) return;
     if (!user) { router.push('/login'); return; }
-
-    const loadProfile = async () => {
-      try {
-        const [storedProfile, storedSessions, storedSubjects] = await Promise.all([
-          userProfileStorage.get('current-user'),
-          studySessionStorage.getAll(),
-          subjectStorage.getAll(),
-        ]);
-
-        if (storedProfile) {
-          const migrated = {
-            ...storedProfile,
-            bio: storedProfile.bio ?? '',
-            privacy: storedProfile.privacy ?? { ...DEFAULT_PRIVACY_SETTINGS },
-          };
-          setProfile(migrated);
-          setDisplayName(migrated.displayName || '');
-          setUsername(migrated.username || '');
-          setBio(migrated.bio || '');
-        }
-        setSessions(storedSessions);
-        setSubjects(storedSubjects);
-      } catch (err) {
-        console.error('Failed to load profile data:', err);
-      }
-    };
-
     loadProfile();
-  }, [mounted, user, router]);
+  }, [mounted, user, router, loadProfile, statsRevision]);
+  useLivePageRefresh(loadProfile);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

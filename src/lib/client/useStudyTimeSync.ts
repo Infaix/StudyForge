@@ -8,12 +8,12 @@ import {
   SegmentAck,
   StudyMode,
   MIN_SUBMIT_SECONDS,
-  refreshUserStats,
   flushPendingSegments,
   getPendingSegments,
   startPendingFlush,
   enqueuePendingSegment,
 } from './studySubmission';
+import { devLog } from './devLog';
 
 export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'pending' | 'offline';
 
@@ -87,7 +87,7 @@ export interface UseStudyTimeSyncOptions {
 }
 
 export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) {
-  const { user, updateUser } = useAuth();
+  const { user, applyStudyStats, refreshUserStats: ctxRefreshStats } = useAuth();
 
   const [recordedSeconds, setRecordedSeconds] = useState(0);
   const [pendingSeconds, setPendingSeconds] = useState(0);
@@ -106,6 +106,12 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
   const sessionClientRef = useRef<StudySessionClient | null>(null);
   const runStartRef = useRef<number | null>(null);
   const segStartRef = useRef<string>('');
+  /**
+   * Sub-minimum seconds held back from the last pause. They ride along with
+   * the next submitted segment, so short bursts are never silently lost
+   * (spec #12) while still respecting the server's minimum segment size.
+   */
+  const carriedSecondsRef = useRef(0);
   /** True while the timer page considers itself "running" across pauses. */
   const wantOpenRef = useRef(false);
   const flushPromiseRef = useRef<Promise<void> | null>(null);
@@ -153,17 +159,11 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
   const applyStats = useCallback(
     (s: StudyStats) => {
       setStats(s);
-      updateUser({
-        xp: s.totalXp,
-        level: s.level,
-        streak: s.streak,
-        studyTimeToday: Math.floor(s.todayStudySeconds / 60),
-        studyTimeThisWeek: Math.floor(s.weekStudySeconds / 60),
-        studyTimeThisMonth: Math.floor(s.monthStudySeconds / 60),
-        studyTimeAllTime: Math.floor(s.totalStudySeconds / 60),
-      });
+      // Single propagation path into shared client state (also bumps the
+      // context's statsRevision so mounted pages know to refetch their data).
+      applyStudyStats(s);
     },
-    [updateUser]
+    [applyStudyStats]
   );
 
   const applyAck = useCallback(
@@ -209,16 +209,29 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
       const session = sessionClientRef.current;
       // Capture once; everything below derives from this instant.
       const endedAtMs = Date.now();
-      const duration =
+      const runDuration =
         runStartRef.current === null ? 0 : Math.floor((endedAtMs - runStartRef.current) / 1000);
-      const startedAt = segStartRef.current || new Date(endedAtMs - duration * 1000).toISOString();
+      // Merge any held-back fragment from a previous short pause (spec #12).
+      const duration = carriedSecondsRef.current + runDuration;
+      const startedAt = segStartRef.current || new Date(endedAtMs - runDuration * 1000).toISOString();
 
       // Close the run immediately: resumed time always opens a NEW segment,
       // making accidental double-submission structurally impossible.
       runStartRef.current = null;
       segStartRef.current = '';
 
-      if (!session || duration < MIN_SUBMIT_SECONDS) return;
+      if (!session) return;
+      if (duration < MIN_SUBMIT_SECONDS) {
+        // Too small to send on its own: hold it for the next segment instead
+        // of discarding legitimate study time. On final completion there is
+        // no next segment, so at most a couple of seconds end unrecorded.
+        if (!completed) carriedSecondsRef.current = duration;
+        else carriedSecondsRef.current = 0;
+        return;
+      }
+      carriedSecondsRef.current = 0;
+
+      devLog('study segment submitted', { sessionId: session.sessionId, durationSeconds: duration, completed });
 
       try {
         const outcome = await session.submit({
@@ -233,6 +246,12 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
           setQueuedCount(getPendingSegments().length);
           persistSnapshot();
         } else if (outcome.recorded && outcome.ack) {
+          devLog('study segment acknowledged', {
+            segmentId: outcome.ack.segmentId,
+            duplicate: outcome.ack.duplicate,
+            recordedSeconds: outcome.ack.recordedSeconds,
+            awardedXp: outcome.ack.awardedXp,
+          });
           applyAck(outcome.ack);
           if (outcome.ack.leveledUp && typeof window !== 'undefined') {
             window.dispatchEvent(
@@ -259,6 +278,7 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
   const beginSession = useCallback(() => {
     sessionClientRef.current = new StudySessionClient(mode, () => subjectGetterRef.current());
     sessionTotalsRef.current = { seconds: 0, xp: 0 };
+    carriedSecondsRef.current = 0;
     recordedRef.current = 0;
     pendingRef.current = 0;
     setRecordedSeconds(0);
@@ -314,16 +334,18 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
     []
   );
 
-  /** Total studied in this timer session: acked + queued + accumulating. */
+  /** Total studied in this timer session: acked + queued + held + accumulating. */
   const studiedSeconds = useCallback(
-    () => recordedSeconds + pendingSeconds + activeSeconds(),
+    () => recordedSeconds + pendingSeconds + carriedSecondsRef.current + activeSeconds(),
     [recordedSeconds, pendingSeconds, activeSeconds]
   );
 
   const refreshStatsNow = useCallback(async () => {
-    const s = await refreshUserStats();
-    if (s) applyStats(s);
-  }, [applyStats]);
+    // Context refresh: reads /api/study/stats, applies to shared state and
+    // bumps statsRevision (read-only — never creates records).
+    const s = await ctxRefreshStats();
+    if (s) setStats(s);
+  }, [ctxRefreshStats]);
 
   /** Totals accumulated (acked) during this session, for summary UIs. */
   const getSessionTotals = useCallback(() => ({ ...sessionTotalsRef.current }), []);
@@ -357,9 +379,9 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
       saveSnapshot({ ...snap, runStartedAt: null, segStartIso: null, paused: true, savedAt: Date.now() });
     }
 
-    // 2. Show authoritative stats immediately.
-    refreshUserStats().then((s) => {
-      if (s) applyStats(s);
+    // 2. Show authoritative stats immediately (context applies + notifies).
+    ctxRefreshStats().then((s) => {
+      if (s) setStats(s);
     });
 
     // 3. Retry queue: background + on reconnect.

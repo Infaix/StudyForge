@@ -14,6 +14,8 @@
  * the source of truth. Queued segments are removed as soon as the server acks.
  */
 
+import { devLog } from './devLog';
+
 export type StudyMode = 'stopwatch' | 'countdown' | 'pomodoro' | 'custom';
 
 export interface StudyStats {
@@ -56,8 +58,9 @@ export interface PendingSegment {
 }
 
 const PENDING_KEY = 'studyforge-pending-segments';
-/** Segments shorter than this are not worth a round-trip (server enforces 15s). */
-export const MIN_SUBMIT_SECONDS = 15;
+/** Segments shorter than this are merged into the next one client-side, so
+ * no studied time is ever discarded (server enforces the same 5s floor). */
+export const MIN_SUBMIT_SECONDS = 5;
 
 // ---------------------------------------------------------------------------
 // Durable pending queue (temporary offline state only)
@@ -149,6 +152,12 @@ export async function flushPendingSegments(
     try {
       const ack = await postSegment(segment);
       acked++;
+      devLog('queued segment flushed', {
+        segmentId: ack.segmentId,
+        duplicate: ack.duplicate,
+        recordedSeconds: ack.recordedSeconds,
+        awardedXp: ack.awardedXp,
+      });
       onAck?.(ack);
     } catch (err) {
       if (err instanceof TypeError) {
@@ -254,8 +263,15 @@ export class StudySessionClient {
       return { recorded: false, ack: null, pending: false };
     }
     this.inflight.add(segment.segmentId);
+    devLog('segment submit started', { segmentId: segment.segmentId, durationSeconds: segment.durationSeconds });
     try {
       const ack = await postSegment(segment);
+      devLog('segment acknowledged', {
+        segmentId: ack.segmentId,
+        duplicate: ack.duplicate,
+        recordedSeconds: ack.recordedSeconds,
+        awardedXp: ack.awardedXp,
+      });
       return { recorded: true, ack, pending: false };
     } catch (err) {
       if (err instanceof TypeError) {
@@ -265,6 +281,7 @@ export class StudySessionClient {
           queue.push(segment);
           setPendingSegments(queue);
         }
+        devLog('segment queued offline', { segmentId: segment.segmentId, durationSeconds: segment.durationSeconds });
         return { recorded: false, ack: null, pending: true };
       }
       // Permanent rejection (validation/auth): do not queue, do not fake success.

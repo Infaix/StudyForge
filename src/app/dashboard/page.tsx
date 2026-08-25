@@ -12,6 +12,7 @@ import {
   studyTaskStorage,
 } from '@/lib/storage';
 import { Subject, Topic, Assessment, StudySession, StudyTask, sessionSeconds } from '@/types';
+import { useAuth, useLivePageRefresh } from '@/contexts/AuthContext';
 import { getStudyRecommendation, type StudyRecommendation } from '@/lib/study/recommendations';
 
 function getGreeting(): string {
@@ -89,6 +90,7 @@ function LoadingSkeleton() {
 
 export default function DashboardPage() {
   const router = useRouter();
+  const { statsRevision } = useAuth();
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [assessments, setAssessments] = useState<Assessment[]>([]);
@@ -96,33 +98,33 @@ export default function DashboardPage() {
   const [tasks, setTasks] = useState<StudyTask[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let mounted = true;
-    const loadData = async () => {
-      try {
-        const [s, t, a, ss, st] = await Promise.all([
-          subjectStorage.getAll(),
-          topicStorage.getAll(),
-          assessmentStorage.getAll(),
-          studySessionStorage.getAll(),
-          studyTaskStorage.getAll(),
-        ]);
-        if (mounted) {
-          setSubjects(s);
-          setTopics(t);
-          setAssessments(a);
-          setStudySessions(ss);
-          setTasks(st);
-        }
-      } catch (error) {
-        console.error('Failed to load dashboard data:', error);
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    };
-    loadData();
-    return () => { mounted = false; };
+  const loadData = React.useCallback(async () => {
+    try {
+      const [s, t, a, ss, st] = await Promise.all([
+        subjectStorage.getAll(),
+        topicStorage.getAll(),
+        assessmentStorage.getAll(),
+        studySessionStorage.getAll(),
+        studyTaskStorage.getAll(),
+      ]);
+      setSubjects(s);
+      setTopics(t);
+      setAssessments(a);
+      setStudySessions(ss);
+      setTasks(st);
+    } catch (error) {
+      console.error('Failed to load dashboard data:', error);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  // Refetch authoritative data on mount, whenever persisted stats change
+  // (e.g. a timer ack elsewhere), on tab return / bfcache restore / reconnect.
+  useEffect(() => {
+    loadData();
+  }, [loadData, statsRevision]);
+  useLivePageRefresh(loadData);
 
   const streak = useMemo(() => calculateStreak(studySessions), [studySessions]);
 

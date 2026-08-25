@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { SegmentAck } from '../studySubmission';
 
 /**
  * Tests for the client-side submission transport: unique segment ids,
@@ -140,7 +141,7 @@ describe('studySubmission transport', () => {
 
     const client = new StudySessionClient('custom', () => ({ id: undefined, name: null }), 's2');
     const warnSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const outcome = await client.submit({ durationSeconds: 20, startedAt: new Date().toISOString() });
+    const outcome = await client.submit({ durationSeconds: 3, startedAt: new Date().toISOString() });
 
     expect(outcome.recorded).toBe(false);
     expect(outcome.pending).toBe(false); // not queued — will never succeed
@@ -171,5 +172,44 @@ describe('studySubmission transport', () => {
     const remaining = getPendingSegments();
     expect(remaining).toHaveLength(1);
     expect(remaining[0].segmentId).toBe('a#1');
+  });
+
+  it('propagates the authoritative ack (with stats) to onAck during flush', async () => {
+    // This is the propagation path consumed by AuthContext.applyStudyStats:
+    // whatever the server returns must reach the UI layer untouched.
+    const { enqueuePendingSegment, flushPendingSegments } = await loadModule();
+
+    const authoritativeStats = {
+      totalStudySeconds: 486,
+      todayStudySeconds: 486,
+      weekStudySeconds: 486,
+      monthStudySeconds: 486,
+      studySessionCount: 3,
+      totalXp: 8,
+      level: 1,
+      xpIntoLevel: 8,
+      xpForNextLevel: 100,
+      progressPercent: 8,
+      streak: 2,
+    };
+    enqueuePendingSegment({
+      segmentId: 'c#1', sessionId: 'c', mode: 'stopwatch', subjectId: null,
+      subjectName: null, startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
+      durationSeconds: 180, completed: false,
+    });
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({ ...okAck('c#1'), recordedSeconds: 180, awardedXp: 3, stats: authoritativeStats }),
+        { status: 200 }
+      )
+    );
+
+    const seenAcks: SegmentAck[] = [];
+    const acked = await flushPendingSegments((ack) => seenAcks.push(ack));
+    expect(acked).toBe(1);
+    expect(seenAcks).toHaveLength(1);
+    expect(seenAcks[0].segmentId).toBe('c#1');
+    expect(seenAcks[0].awardedXp).toBe(3);
+    expect(seenAcks[0].stats).toEqual(authoritativeStats);
   });
 });
