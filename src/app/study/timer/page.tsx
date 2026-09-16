@@ -116,9 +116,8 @@ export default function StudyTimer() {
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
-  useEffect(() => {
-    if (!user) router.push('/login');
-  }, [user, router]);
+  // Accounts are optional: anonymous users get the full timer with durable
+  // local persistence; segments migrate on sign-in. No login redirect here.
 
   const selectedSubject = subjects.find((s) => s.id === selectedSubjectId) || null;
 
@@ -869,8 +868,6 @@ export default function StudyTimer() {
     </div>
   );
 
-  if (!user) return null;
-
   return (
     <DashboardLayout>
       <div className="p-6 max-w-4xl mx-auto">
@@ -925,6 +922,31 @@ export default function StudyTimer() {
               Saved <span className="font-semibold">{formatMinutes(sync.lastAward.seconds)}</span> of study time
             </span>
             <span className="font-bold">+{sync.lastAward.xp} XP</span>
+          </div>
+        )}
+        {sync.isAnonymous && (
+          <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20 px-4 py-3 text-sm text-blue-800 dark:text-blue-200">
+            You&apos;re studying without an account — time is saved on this device and will
+            migrate automatically when you <button onClick={() => router.push('/login')} className="underline font-medium">sign in</button>.
+          </div>
+        )}
+        {sync.recoveredNotice?.kind === 'recovered' && (
+          <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20 px-4 py-3 text-sm text-blue-800 dark:text-blue-200 flex items-center justify-between gap-3">
+            <span>
+              Study session recovered{sync.recoveredNotice.subjectName ? <> · {sync.recoveredNotice.subjectName}</> : null} · {formatMinutes(sync.recoveredNotice.seconds)} — timer resumed.
+            </span>
+            <button onClick={sync.clearRecoveredNotice} className="underline font-medium shrink-0">Dismiss</button>
+          </div>
+        )}
+        {sync.recoveredNotice?.kind === 'stale' && (
+          <div className="mb-6 rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/50 px-4 py-3 text-sm text-gray-700 dark:text-gray-300 flex items-center justify-between gap-3">
+            <span>A previous timer was too old to resume safely, so it wasn&apos;t counted. Your earlier saved time is intact.</span>
+            <button onClick={sync.clearRecoveredNotice} className="underline font-medium shrink-0">Dismiss</button>
+          </div>
+        )}
+        {sync.tabConflict && (
+          <div className="mb-6 rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-200">
+            Another StudyForge tab is running a timer. Only one tab owns the session to avoid double-counting.
           </div>
         )}
         {sync.pendingSeconds > 0 && (

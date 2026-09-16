@@ -143,6 +143,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signOut = useCallback(async () => {
     setIsLoading(true);
     try {
+      // Persist any open study run BEFORE the session cookie disappears.
+      // The durable queue survives regardless, but flushing first keeps the
+      // current 20s checkpoint window attributed to this account (#5).
+      try {
+        await (window as unknown as { __studyforgeFlushAll?: () => Promise<void> }).__studyforgeFlushAll?.();
+      } catch {
+        // Best-effort: pagehide/queue recovery covers the remainder.
+      }
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
       setUser(null);
       setHasSession(false);

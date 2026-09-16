@@ -34,6 +34,7 @@ import {
   QuizResult,
   sessionSeconds,
 } from '@/types';
+import { clientSessionGroupKey } from '@/lib/client/studySubmission';
 import { useParams } from 'next/navigation';
 
 type Tab = 'overview' | 'topics' | 'assessments' | 'activity' | 'flashcards' | 'quizzes';
@@ -192,6 +193,25 @@ export default function SubjectDetailPage() {
     return Math.round(sessions.reduce((sum, s) => sum + sessionSeconds(s), 0) / 60);
   };
 
+  /**
+   * Checkpoint segments sharing one timer run collapse into a single entry
+   * so counts and activity lists show sessions, not 20s database rows.
+   */
+  const groupedSessions = React.useMemo(() => {
+    const groups = new Map<string, { key: string; startTime: string; seconds: number; topicId: string | null; notes: string | null }>();
+    for (const s of sessions) {
+      const key = clientSessionGroupKey(s);
+      const g = groups.get(key);
+      if (!g) {
+        groups.set(key, { key, startTime: s.startTime, seconds: sessionSeconds(s), topicId: s.topicId, notes: s.notes });
+      } else {
+        g.seconds += sessionSeconds(s);
+        if (s.startTime < g.startTime) g.startTime = s.startTime;
+      }
+    }
+    return [...groups.values()].sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+  }, [sessions]);
+
   const upcomingAssessments = assessments.filter((a) => a.status === 'upcoming');
   const completedAssessments = assessments.filter((a) => a.status === 'completed');
 
@@ -270,7 +290,7 @@ export default function SubjectDetailPage() {
                 {formatDuration(getTotalStudyMinutes())}
               </p>
               <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">
-                {sessions.length} session{sessions.length !== 1 ? 's' : ''}
+                {groupedSessions.length} session{groupedSessions.length !== 1 ? 's' : ''}
               </p>
             </CardContent>
           </Card>
@@ -290,17 +310,16 @@ export default function SubjectDetailPage() {
             <h3 className="font-semibold text-gray-900 dark:text-white">Recent Activity</h3>
           </CardHeader>
           <CardContent>
-            {sessions.length === 0 ? (
+            {groupedSessions.length === 0 ? (
               <p className="text-sm text-gray-500 dark:text-gray-400">No study sessions yet. Start studying to see activity here.</p>
             ) : (
               <div className="space-y-3">
-                {sessions
-                  .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())
+                {groupedSessions
                   .slice(0, 5)
                   .map((session) => {
                     const topic = topics.find((t) => t.id === session.topicId);
                     return (
-                      <div key={session.id} className="flex items-center justify-between py-2 border-b border-gray-100 dark:border-gray-800 last:border-0">
+                      <div key={session.key} className="flex items-center justify-between py-2 border-b border-gray-100 dark:border-gray-800 last:border-0">
                         <div>
                           <p className="text-sm font-medium text-gray-900 dark:text-white">
                             {topic ? topic.name : 'General study'}
@@ -309,7 +328,7 @@ export default function SubjectDetailPage() {
                             {new Date(session.startTime).toLocaleDateString()}
                           </p>
                         </div>
-                        <Badge variant="info">{formatDuration(Math.round(sessionSeconds(session) / 60))}</Badge>
+                        <Badge variant="info">{formatDuration(Math.round(session.seconds / 60))}</Badge>
                       </div>
                     );
                   })}
@@ -470,13 +489,9 @@ export default function SubjectDetailPage() {
   );
 
   const renderActivityTab = () => {
-    const recentSessions = [...sessions]
-      .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())
-      .slice(0, 10);
-
     return (
       <>
-        {recentSessions.length === 0 ? (
+        {groupedSessions.length === 0 ? (
           <EmptyState
             icon={<span className="text-6xl">⏱️</span>}
             title="No study sessions"
@@ -484,10 +499,10 @@ export default function SubjectDetailPage() {
           />
         ) : (
           <div className="space-y-4">
-            {recentSessions.map((session) => {
+            {groupedSessions.slice(0, 10).map((session) => {
               const topic = topics.find((t) => t.id === session.topicId);
               return (
-                <Card key={session.id}>
+                <Card key={session.key}>
                   <CardContent className="py-4">
                     <div className="flex items-center justify-between">
                       <div>
@@ -502,7 +517,7 @@ export default function SubjectDetailPage() {
                           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-1">{session.notes}</p>
                         )}
                       </div>
-                      <Badge variant="info">{formatDuration(Math.round(sessionSeconds(session) / 60))}</Badge>
+                      <Badge variant="info">{formatDuration(Math.round(session.seconds / 60))}</Badge>
                     </div>
                   </CardContent>
                 </Card>

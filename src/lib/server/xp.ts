@@ -291,7 +291,7 @@ export async function getXpHistory(userId: string, limit: number = 20): Promise<
  * Calculate streak information for a user based on their study sessions.
  * Calculates current streak, longest streak, last study date, and total study days.
  */
-export async function getStreakInfo(userId: string): Promise<{
+export async function getStreakInfo(userId: string, timeZone = 'UTC'): Promise<{
   currentStreak: number;
   longestStreak: number;
   lastStudyDate: string | null;
@@ -315,11 +315,12 @@ export async function getStreakInfo(userId: string): Promise<{
     };
   }
 
-  // Get unique study days (deduplicated by date)
+  const safeTimeZone = (() => { try { new Intl.DateTimeFormat('en-US', { timeZone }); return timeZone; } catch { return 'UTC'; } })();
+  const dateKey = (iso: string) => new Intl.DateTimeFormat('en-CA', { timeZone: safeTimeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
+  // Get unique study days (deduplicated by the user's local calendar date).
   const uniqueDatesSet = new Set<string>();
   for (const session of results) {
-    const dateKey = new Date(session.start_time).toISOString().split('T')[0];
-    uniqueDatesSet.add(dateKey);
+    uniqueDatesSet.add(dateKey(session.start_time));
   }
 
   const uniqueDates = Array.from(uniqueDatesSet).sort();
@@ -377,7 +378,7 @@ export async function getStreakInfo(userId: string): Promise<{
   let currentStreakValue = 0;
   
   // Check how many consecutive days ending with today have study sessions
-  const todayKey = today.toISOString().split('T')[0];
+  const todayKey = dateKey(new Date().toISOString());
   
   // Walk backwards from today
   let checkedDays = 0;
@@ -413,7 +414,7 @@ export async function getStreakInfo(userId: string): Promise<{
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
     yesterday.setHours(0, 0, 0, 0);
-    const yesterdayKey = yesterday.toISOString().split('T')[0];
+    const yesterdayKey = dateKey(yesterday.toISOString());
     
     let streakFromYesterday = 0;
     let daysChecked = 0;

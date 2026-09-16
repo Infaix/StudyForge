@@ -48,9 +48,10 @@ function formatTimeShort(totalSeconds: number): string {
 const SYNC_LABELS: Record<SyncStatus, string> = {
   idle: '',
   syncing: 'Syncing…',
-  synced: 'Synced',
-  pending: 'Pending sync',
-  offline: 'Offline — will sync',
+  synced: 'Saved',
+  pending: 'Saving…',
+  offline: 'Offline — saved on this device',
+  local: 'Saved on this device',
 };
 
 export default function StudyStopwatch() {
@@ -69,10 +70,8 @@ export default function StudyStopwatch() {
   const lapCounterRef = useRef(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => {
-    if (!user) router.push('/login');
-  }, [user, router]);
-
+  // Accounts are optional: anonymous users get the full timer with durable
+  // local persistence; segments migrate on sign-in. No login redirect here.
   useEffect(() => {
     subjectStorage.getAll().then((stored) => {
       if (stored.length > 0) setSubjects(stored);
@@ -156,8 +155,6 @@ export default function StudyStopwatch() {
   const hasUnsavedWork =
     isRunning || isPaused || sync.recordedSeconds > 0 || sync.pendingSeconds > 0;
 
-  if (!user) return null;
-
   return (
     <DashboardLayout>
       <div className="max-w-4xl mx-auto space-y-6">
@@ -176,6 +173,34 @@ export default function StudyStopwatch() {
               Saved <span className="font-semibold">{formatTimeShort(sync.lastAward.seconds)}</span> of study time
             </span>
             <span className="font-bold">+{sync.lastAward.xp} XP</span>
+          </div>
+        )}
+        {sync.isAnonymous && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20 px-4 py-3 text-sm text-blue-800 dark:text-blue-200">
+            You&apos;re studying without an account — time is saved on this device
+            {sync.anonSeconds > 0 && <> ({formatTimeShort(sync.anonSeconds)} stored)</>} and will
+            migrate automatically when you <button onClick={() => router.push('/login')} className="underline font-medium">sign in</button>.
+          </div>
+        )}
+        {sync.recoveredNotice?.kind === 'recovered' && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20 px-4 py-3 text-sm text-blue-800 dark:text-blue-200 flex items-center justify-between gap-3">
+            <span>
+              Study session recovered{sync.recoveredNotice.subjectName ? <> · {sync.recoveredNotice.subjectName}</> : null} · {formatTimeShort(sync.recoveredNotice.seconds)} — timer resumed.
+            </span>
+            <button onClick={sync.clearRecoveredNotice} className="underline font-medium shrink-0">Dismiss</button>
+          </div>
+        )}
+        {sync.recoveredNotice?.kind === 'stale' && (
+          <div className="rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/50 px-4 py-3 text-sm text-gray-700 dark:text-gray-300 flex items-center justify-between gap-3">
+            <span>
+              A previous timer was too old to resume safely, so it wasn&apos;t counted. Your earlier saved time is intact.
+            </span>
+            <button onClick={sync.clearRecoveredNotice} className="underline font-medium shrink-0">Dismiss</button>
+          </div>
+        )}
+        {sync.tabConflict && (
+          <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-200">
+            Another StudyForge tab is running a timer. Only one tab owns the session to avoid double-counting.
           </div>
         )}
         {sync.lastProblem === 'auth' ? (
@@ -323,11 +348,11 @@ export default function StudyStopwatch() {
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-gray-600 dark:text-gray-400">Total XP</span>
-                  <Badge variant="success">{sync.stats ? sync.stats.totalXp : user.xp}</Badge>
+                  <Badge variant="success">{sync.stats ? sync.stats.totalXp : (user?.xp ?? 0)}</Badge>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-gray-600 dark:text-gray-400">Level</span>
-                  <Badge variant="info">{sync.stats ? sync.stats.level : user.level}</Badge>
+                  <Badge variant="info">{sync.stats ? sync.stats.level : (user?.level ?? 1)}</Badge>
                 </div>
               </CardContent>
             </Card>

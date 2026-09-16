@@ -6,6 +6,7 @@ interface SubmitStudyBody {
   durationSeconds?: number;
   subjectId?: string;
   subjectName?: string;
+  deviceId?: string | null;
   timerType?: 'pomodoro' | 'countdown' | 'stopwatch' | 'other';
   sessionId?: string;
   startedAt?: string;
@@ -44,6 +45,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       mode,
       subjectId: body.subjectId ?? null,
       subjectName: body.subjectName ?? null,
+      deviceId: body.deviceId ?? null,
       startedAt: body.startedAt,
       durationSeconds: body.durationSeconds,
       completed: true,

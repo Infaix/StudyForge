@@ -8,6 +8,7 @@ interface CompleteStudySessionBody {
   mode?: 'stopwatch' | 'countdown' | 'pomodoro' | 'custom';
   subjectId?: string | null;
   subjectName?: string | null;
+  deviceId?: string | null;
   startedAt?: string;
   endedAt?: string;
   durationSeconds?: number;

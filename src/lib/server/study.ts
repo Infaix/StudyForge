@@ -13,11 +13,25 @@ export interface SegmentInput {
   mode?: string;
   subjectId?: string | null;
   subjectName?: string | null;
+  /** Stable per-browser id so cross-device merges stay distinguishable. */
+  deviceId?: string | null;
   startedAt?: string;
   endedAt?: string;
   durationSeconds?: number;
   duration?: number;
   completed?: boolean;
+}
+
+export interface SubjectBreakdown {
+  subjectId: string | null;
+  subjectName: string | null;
+  seconds: number;
+}
+
+export interface DayBucket {
+  /** Local calendar date in the requesting timezone (YYYY-MM-DD). */
+  date: string;
+  seconds: number;
 }
 
 export interface StudyStats {
@@ -34,6 +48,24 @@ export interface StudyStats {
   xpForNextLevel: number;
   progressPercent: number;
   streak: number;
+  /** Extended breakdowns (populated by getUserStudyStats; safe to ignore). */
+  bySubject?: SubjectBreakdown[];
+  byDay?: DayBucket[];
+  averageSessionSeconds?: number;
+  longestStreak?: number;
+  totalStudyDays?: number;
+}
+
+export interface SessionHistoryEntry {
+  sessionId: string;
+  mode: string;
+  subjectId: string | null;
+  subjectName: string | null;
+  startedAt: string;
+  endedAt: string;
+  durationSeconds: number;
+  segmentCount: number;
+  completed: boolean;
 }
 
 export interface RecordSegmentResult {
@@ -74,6 +106,7 @@ export function validateSegmentInput(body: SegmentInput): { ok: true; value: {
   sessionId: string;
   mode: StudyMode;
   subjectId: string | null;
+  deviceId: string | null;
   subjectName: string | null;
   startedAt: string;
   endedAt: string;
@@ -132,6 +165,9 @@ export function validateSegmentInput(body: SegmentInput): { ok: true; value: {
   const subjectId =
     typeof body.subjectId === 'string' && body.subjectId.trim() !== '' ? body.subjectId.trim().slice(0, 128) : null;
 
+  const deviceId =
+    typeof body.deviceId === 'string' && body.deviceId.trim() !== '' ? body.deviceId.trim().slice(0, 128) : null;
+
   return {
     ok: true,
     value: {
@@ -139,6 +175,7 @@ export function validateSegmentInput(body: SegmentInput): { ok: true; value: {
       sessionId: (rawSessionId || rawSegmentId).slice(0, 128),
       mode,
       subjectId,
+      deviceId,
       subjectName:
         typeof body.subjectName === 'string' && body.subjectName.trim() !== ''
           ? body.subjectName.trim().slice(0, 120)
@@ -154,16 +191,121 @@ export function validateSegmentInput(body: SegmentInput): { ok: true; value: {
 /** Effective seconds of a row, preferring exact seconds over legacy minutes. */
 const EFFECTIVE_SECONDS_SQL = 'COALESCE(ss.duration_seconds, ss.duration * 60)';
 
+/** Grouping key for one logical timer run. New rows store session_id
+ * directly; older rows fall back to the `{session}#...` segment convention. */
+export function sessionGroupKey(row: { session_id?: string | null; segment_id?: string | null; id: string }): string {
+  if (row.session_id) return row.session_id;
+  const seg = row.segment_id ?? '';
+  const hash = seg.indexOf('#');
+  if (hash > 0) return seg.slice(0, hash);
+  return row.id;
+}
+
+// ---------------------------------------------------------------------------
+// Timezone-aware calendar boundaries.
+//
+// start_time values are UTC ISO strings. "Today" must follow the user's
+// local calendar day, not UTC. All helpers below resolve a local wall-clock
+// boundary (midnight / Monday / 1st of month) back to a UTC instant using
+// Intl, with an iterative offset fix-up so DST transitions stay correct.
+// ---------------------------------------------------------------------------
+
+function safeTimeZone(tz: unknown): string {
+  if (typeof tz !== 'string' || !tz) return 'UTC';
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return tz;
+  } catch {
+    return 'UTC';
+  }
+}
+
+function tzOffsetMs(timeZone: string, ms: number): number {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  const parts = dtf.formatToParts(new Date(ms));
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '0';
+  const asUTC = Date.UTC(
+    parseInt(get('year'), 10),
+    parseInt(get('month'), 10) - 1,
+    parseInt(get('day'), 10),
+    parseInt(get('hour'), 10) % 24,
+    parseInt(get('minute'), 10),
+    parseInt(get('second'), 10)
+  );
+  return asUTC - ms;
+}
+
+/** UTC instant of a local-calendar midnight in `timeZone`. */
+export function zonedMidnightToUtcMs(y: number, m: number, d: number, timeZone: string): number {
+  const tz = safeTimeZone(timeZone);
+  const wallAsUTC = Date.UTC(y, m - 1, d, 0, 0, 0);
+  // Fixed-point iteration: ms + offset(ms) == wallAsUTC. Two passes are
+  // enough even across DST transitions.
+  let ms = wallAsUTC;
+  for (let i = 0; i < 2; i++) ms = wallAsUTC - tzOffsetMs(tz, ms);
+  return ms;
+}
+
+export function zonedDateParts(ms: number, timeZone: string): { y: number; m: number; d: number } {
+  const tz = safeTimeZone(timeZone);
+  const dtf = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+  const [y, m, d] = dtf.format(new Date(ms)).split('-').map((n) => parseInt(n, 10));
+  return { y, m, d };
+}
+
+/** Local weekday (1=Mon..7=Sun) for an instant in `timeZone`. */
+function zonedWeekday(ms: number, timeZone: string): number {
+  const dtf = new Intl.DateTimeFormat('en-US', { timeZone: safeTimeZone(timeZone), weekday: 'short' });
+  const day = dtf.format(new Date(ms));
+  return { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }[day] ?? 1;
+}
+
+export interface DayBounds {
+  todayStartIso: string;
+  weekStartIso: string;
+  monthStartIso: string;
+}
+
+/** Calendar day/week(Mon)/month starts in the user's timezone, as UTC ISOs. */
+export function getZonedDayBounds(nowMs: number, timeZone: string): DayBounds {
+  const tz = safeTimeZone(timeZone);
+  const { y, m, d } = zonedDateParts(nowMs, tz);
+  const todayStart = zonedMidnightToUtcMs(y, m, d, tz);
+  const weekday = zonedWeekday(nowMs, tz);
+  const weekStart = todayStart - (weekday - 1) * 24 * 60 * 60 * 1000;
+  const monthStart = zonedMidnightToUtcMs(y, m, 1, tz);
+  return {
+    todayStartIso: new Date(todayStart).toISOString(),
+    weekStartIso: new Date(weekStart).toISOString(),
+    monthStartIso: new Date(monthStart).toISOString(),
+  };
+}
+
+/** Local YYYY-MM-DD for an instant in `timeZone`. */
+export function zonedDateKey(ms: number, timeZone: string): string {
+  const { y, m, d } = zonedDateParts(ms, safeTimeZone(timeZone));
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
 /**
  * Authoritative aggregate statistics for a user, derived from study_sessions.
+ * Day/week/month follow the caller's timezone calendar (Monday-start weeks);
+ * pass the client's IANA name (e.g. Australia/Melbourne) for correct daily
+ * boundaries instead of UTC grouping.
  */
-export async function getUserStudyStats(userId: string): Promise<StudyStats> {
+export async function getUserStudyStats(userId: string, opts?: { timeZone?: string }): Promise<StudyStats> {
   const db = getDB();
   const nowMs = Date.now();
-  const now = new Date(nowMs);
-  const todayStartIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
-  const weekStartIso = new Date(nowMs - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const monthStartIso = new Date(nowMs - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const { todayStartIso, weekStartIso, monthStartIso } = getZonedDayBounds(nowMs, opts?.timeZone ?? 'UTC');
 
   const agg = await db.prepare(`
     SELECT
@@ -194,6 +336,66 @@ export async function getUserStudyStats(userId: string): Promise<StudyStats> {
   const xpForNextLevel = Math.max(100, 100 * level);
   const xpIntoLevel = totalXp - xpRequiredForLevel(level);
 
+  // Extended breakdowns for statistics/history views. Each query is scoped
+  // to the user and covered by the 0003 indexes; failures degrade to empty
+  // breakdowns rather than failing the whole stats read.
+  const timeZone = safeTimeZone(opts?.timeZone ?? 'UTC');
+  let bySubject: SubjectBreakdown[] = [];
+  let byDay: DayBucket[] = [];
+  let averageSessionSeconds = 0;
+  let longestStreak = 0;
+  let totalStudyDays = 0;
+  try {
+    const subjRows = await db.prepare(`
+      SELECT ss.subject_id AS subject_id, s.name AS subject_name,
+             COALESCE(SUM(${EFFECTIVE_SECONDS_SQL}), 0) AS seconds
+      FROM study_sessions ss LEFT JOIN subjects s ON s.id = ss.subject_id
+      WHERE ss.user_id = ? GROUP BY ss.subject_id ORDER BY seconds DESC
+    `).bind(userId).all<{ subject_id: string | null; subject_name: string | null; seconds: number }>();
+    bySubject = (subjRows.results ?? []).map((r) => ({
+      subjectId: r.subject_id,
+      subjectName: r.subject_name,
+      seconds: r.seconds ?? 0,
+    }));
+
+    const dayRows = await db.prepare(`
+      SELECT ss.start_time AS start_time, ${EFFECTIVE_SECONDS_SQL} AS seconds
+      FROM study_sessions ss WHERE ss.user_id = ? AND ss.start_time >= ?
+      ORDER BY ss.start_time ASC
+    `).bind(userId, new Date(nowMs - 14 * 24 * 60 * 60 * 1000).toISOString())
+      .all<{ start_time: string; seconds: number }>();
+    const dayMap = new Map<string, number>();
+    for (const r of dayRows.results ?? []) {
+      const ms = new Date(r.start_time).getTime();
+      if (Number.isNaN(ms)) continue;
+      const key = zonedDateKey(ms, timeZone);
+      dayMap.set(key, (dayMap.get(key) ?? 0) + (r.seconds ?? 0));
+    }
+    byDay = [...dayMap.entries()]
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+      .map(([date, seconds]) => ({ date, seconds }));
+
+    const sessRows = await db.prepare(`
+      SELECT ss.session_id AS session_id, ss.segment_id AS segment_id, ss.id AS id,
+             COALESCE(ss.duration_seconds, ss.duration * 60) AS seconds
+      FROM study_sessions ss WHERE ss.user_id = ?
+    `).bind(userId).all<{ session_id: string | null; segment_id: string | null; id: string; seconds: number }>();
+    const sessMap = new Map<string, number>();
+    for (const r of sessRows.results ?? []) {
+      const key = sessionGroupKey(r);
+      sessMap.set(key, (sessMap.get(key) ?? 0) + (r.seconds ?? 0));
+    }
+    if (sessMap.size > 0) {
+      averageSessionSeconds = Math.round([...sessMap.values()].reduce((a, b) => a + b, 0) / sessMap.size);
+    }
+
+    const streakInfo = await getStreakInfo(userId);
+    longestStreak = streakInfo.longestStreak;
+    totalStudyDays = streakInfo.totalStudyDays;
+  } catch {
+    // Breakdowns are best-effort; core totals above remain authoritative.
+  }
+
   return {
     totalStudySeconds: agg?.total_seconds ?? 0,
     todayStudySeconds: agg?.today_seconds ?? 0,
@@ -207,6 +409,11 @@ export async function getUserStudyStats(userId: string): Promise<StudyStats> {
     xpForNextLevel,
     progressPercent: Math.min(100, Math.max(0, (xpIntoLevel / xpForNextLevel) * 100)),
     streak: profile?.streak ?? 0,
+    bySubject,
+    byDay,
+    averageSessionSeconds,
+    longestStreak,
+    totalStudyDays,
   };
 }
 
@@ -282,27 +489,56 @@ export async function recordStudySegment(
 
   // Idempotency: UNIQUE index on segment_id makes retries and double-clicks
   // single-count. INSERT OR IGNORE + meta.changes is race-safe.
-  const insertResult = await db.prepare(`
-    INSERT OR IGNORE INTO study_sessions
-      (id, user_id, subject_id, topic_id, duration, start_time, end_time, notes,
-       duration_seconds, segment_id, mode, completed, created_at)
-    VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-  `)
-    .bind(
-      crypto.randomUUID(),
-      userId,
-      subjectId,
-      Math.floor(seg.durationSeconds / 60), // legacy minute column kept in sync
-      seg.startedAt,
-      seg.endedAt,
-      notes,
-      seg.durationSeconds,
-      seg.segmentId,
-      seg.mode,
-      seg.completed ? 1 : 0,
-      nowIso
-    )
-    .run();
+  // session_id/device_id columns come from migration 0003; older databases
+  // without them fall back to the legacy column list so reads never break.
+  let insertResult;
+  try {
+    insertResult = await db.prepare(`
+      INSERT OR IGNORE INTO study_sessions
+        (id, user_id, subject_id, topic_id, duration, start_time, end_time, notes,
+         duration_seconds, segment_id, session_id, device_id, mode, completed, created_at)
+      VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+    `)
+      .bind(
+        crypto.randomUUID(),
+        userId,
+        subjectId,
+        Math.floor(seg.durationSeconds / 60), // legacy minute column kept in sync
+        seg.startedAt,
+        seg.endedAt,
+        notes,
+        seg.durationSeconds,
+        seg.segmentId,
+        seg.sessionId,
+        seg.deviceId,
+        seg.mode,
+        seg.completed ? 1 : 0,
+        nowIso
+      )
+      .run();
+  } catch {
+    insertResult = await db.prepare(`
+      INSERT OR IGNORE INTO study_sessions
+        (id, user_id, subject_id, topic_id, duration, start_time, end_time, notes,
+         duration_seconds, segment_id, mode, completed, created_at)
+      VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+    `)
+      .bind(
+        crypto.randomUUID(),
+        userId,
+        subjectId,
+        Math.floor(seg.durationSeconds / 60), // legacy minute column kept in sync
+        seg.startedAt,
+        seg.endedAt,
+        notes,
+        seg.durationSeconds,
+        seg.segmentId,
+        seg.mode,
+        seg.completed ? 1 : 0,
+        nowIso
+      )
+      .run();
+  }
 
   const inserted = (insertResult.meta?.changes ?? 0) > 0;
 
@@ -421,4 +657,124 @@ export async function recordStudySegment(
     leveledUp,
     stats: finalStats,
   };
+}
+
+/**
+ * Grouped study-session history: checkpoint segments that share one
+ * `studySessionId` collapse into a single understandable entry (never twenty
+ * separate 20-second rows). Grouping prefers the stored session_id column
+ * and falls back to the `{session}#...` segment convention for older rows.
+ */
+export async function getStudySessionHistory(
+  userId: string,
+  opts?: { limit?: number }
+): Promise<SessionHistoryEntry[]> {
+  const db = getDB();
+  const limit = Math.max(1, Math.min(100, opts?.limit ?? 20));
+  // Pull recent segments; grouping happens in JS so legacy + new rows mix.
+  const { results } = await db.prepare(`
+    SELECT ss.id AS id, ss.session_id AS session_id, ss.segment_id AS segment_id,
+           ss.subject_id AS subject_id, s.name AS subject_name,
+           ss.mode AS mode, ss.start_time AS start_time, ss.end_time AS end_time,
+           COALESCE(ss.duration_seconds, ss.duration * 60) AS seconds,
+           ss.completed AS completed
+    FROM study_sessions ss LEFT JOIN subjects s ON s.id = ss.subject_id
+    WHERE ss.user_id = ? ORDER BY ss.start_time DESC LIMIT 500
+  `).bind(userId).all<{
+    id: string;
+    session_id: string | null;
+    segment_id: string | null;
+    subject_id: string | null;
+    subject_name: string | null;
+    mode: string | null;
+    start_time: string;
+    end_time: string;
+    seconds: number;
+    completed: number | null;
+  }>().catch(() => ({ results: [] as never[] }));
+
+  const groups = new Map<string, SessionHistoryEntry & { modes: Map<string, number> }>();
+  for (const r of results ?? []) {
+    const key = sessionGroupKey(r);
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        sessionId: key,
+        mode: r.mode ?? 'custom',
+        subjectId: r.subject_id,
+        subjectName: r.subject_name,
+        startedAt: r.start_time,
+        endedAt: r.end_time,
+        durationSeconds: 0,
+        segmentCount: 0,
+        completed: false,
+        modes: new Map(),
+      };
+      groups.set(key, g);
+    }
+    g.durationSeconds += r.seconds ?? 0;
+    g.segmentCount += 1;
+    if (r.start_time < g.startedAt) g.startedAt = r.start_time;
+    if (r.end_time > g.endedAt) g.endedAt = r.end_time;
+    if (r.completed === 1) g.completed = true;
+    if (!g.subjectName && r.subject_name) {
+      g.subjectName = r.subject_name;
+      g.subjectId = r.subject_id;
+    }
+    if (r.mode) g.modes.set(r.mode, (g.modes.get(r.mode) ?? 0) + 1);
+  }
+
+  return [...groups.values()]
+    .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1))
+    .slice(0, limit)
+    .map((g) => {
+      // Dominant mode wins when a session spans modes (e.g. mode switch).
+      let mode = g.mode;
+      let best = 0;
+      for (const [m, n] of g.modes) {
+        if (n > best) {
+          best = n;
+          mode = m;
+        }
+      }
+      return {
+        sessionId: g.sessionId,
+        mode,
+        subjectId: g.subjectId,
+        subjectName: g.subjectName,
+        startedAt: g.startedAt,
+        endedAt: g.endedAt,
+        durationSeconds: g.durationSeconds,
+        segmentCount: g.segmentCount,
+        completed: g.completed,
+      };
+    });
+}
+
+/**
+ * Minimal cross-device conflict detection: if segments from a DIFFERENT
+ * deviceId landed within the recent window, another StudyForge session is
+ * (or was just) active on this account. Historical segments still merge
+ * normally (independent IDs) — this only drives a non-destructive warning.
+ */
+export async function getCrossDeviceWarning(
+  userId: string,
+  deviceId: string | null,
+  windowMinutes = 10
+): Promise<{ active: boolean; otherDevices: number; windowMinutes: number }> {
+  const db = getDB();
+  const sinceIso = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
+  try {
+    const { results } = await db.prepare(`
+      SELECT DISTINCT ss.device_id AS device_id FROM study_sessions ss
+      WHERE ss.user_id = ? AND ss.start_time >= ?
+    `).bind(userId, sinceIso).all<{ device_id: string | null }>();
+    const others = new Set(
+      (results ?? []).map((r) => r.device_id).filter((d) => d && d !== deviceId)
+    );
+    return { active: others.size > 0, otherDevices: others.size, windowMinutes };
+  } catch {
+    // device_id column predates migration 0003 on some databases.
+    return { active: false, otherDevices: 0, windowMinutes };
+  }
 }
