@@ -25,6 +25,9 @@ import {
   claimTimerLock,
   heartbeatTimerLock,
   releaseTimerLock,
+  getActiveTimerSnapshot,
+  getCurrentTabId,
+  ActiveTimerSnapshot,
   QueueDropReason,
 } from './studySubmission';
 import { devLog } from './devLog';
@@ -69,57 +72,15 @@ export interface RecoveredNotice {
  *   without logout/login (#16).
  */
 
-const ACTIVE_TIMER_KEY = 'studyforge-active-timer';
 export const CHECKPOINT_INTERVAL_MS = 20_000;
 /** Minimum run length before a checkpoint will cut a segment. */
 const CHECKPOINT_MIN_SECONDS = 10;
 
-interface ActiveTimerSnapshot {
-  sessionId: string;
-  mode: StudyMode;
-  subjectId: string | null;
-  subjectName: string | null;
-  /** Seconds acknowledged by the server within this timer session. */
-  recordedSeconds: number;
-  /** Epoch ms of the currently open measurement run (null when none). */
-  runStartedAt: number | null;
-  segStartIso: string | null;
-  paused: boolean;
-  savedAt: number;
-  carriedSeconds?: number;
-}
-
-function newTabId(): string {
-  try {
-    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
-  } catch {}
-  return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-/** One stable id per browser tab (shared by every hook instance in the tab). */
-let cachedTabId: string | null = null;
-function getTabId(): string {
-  if (!cachedTabId) cachedTabId = newTabId();
-  return cachedTabId;
-}
-
-function loadSnapshot(): ActiveTimerSnapshot | null {
-  try {
-    if (typeof window === 'undefined') return null;
-    const raw = window.localStorage.getItem(ACTIVE_TIMER_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as ActiveTimerSnapshot;
-    return parsed && typeof parsed.sessionId === 'string' ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 function saveSnapshot(snapshot: ActiveTimerSnapshot | null): void {
   try {
     if (typeof window === 'undefined') return;
-    if (!snapshot) window.localStorage.removeItem(ACTIVE_TIMER_KEY);
-    else window.localStorage.setItem(ACTIVE_TIMER_KEY, JSON.stringify(snapshot));
+    if (!snapshot) window.localStorage.removeItem('studyforge-active-timer');
+    else window.localStorage.setItem('studyforge-active-timer', JSON.stringify(snapshot));
   } catch {}
 }
 
@@ -170,11 +131,15 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
   const awardTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionTotalsRef = useRef({ seconds: 0, xp: 0 });
   const subjectGetterRef = useRef(getSubject);
-  const tabIdRef = useRef<string>(getTabId());
+  const tabIdRef = useRef<string>(getCurrentTabId());
+  const recoveredNoticeRef = useRef<RecoveredNotice | null>(null);
   const lastStatsRefreshRef = useRef(0);
   useEffect(() => {
     subjectGetterRef.current = getSubject;
   });
+  useEffect(() => {
+    recoveredNoticeRef.current = recoveredNotice;
+  }, [recoveredNotice]);
 
   const status: SyncStatus =
     isAnonymous
@@ -212,7 +177,7 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
     if (!client) {
       // No live session: keep an existing recovery snapshot untouched unless
       // there is nothing left to recover.
-      const existing = loadSnapshot();
+      const existing = getActiveTimerSnapshot();
       if (!existing || existing.runStartedAt === null) saveSnapshot(null);
       return;
     }
@@ -227,6 +192,7 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
       paused: !wantOpenRef.current,
       savedAt: Date.now(),
       carriedSeconds: carriedSecondsRef.current,
+      recovered: recoveredNoticeRef.current?.kind === 'recovered',
     });
   }, []);
 
@@ -566,7 +532,7 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
 
   useEffect(() => {
     const tabId = tabIdRef.current;
-    const snap = loadSnapshot();
+    const snap = getActiveTimerSnapshot();
 
     // Multi-tab: a second tab must not operate the same recovered timer.
     // Only the lock owner reconciles the orphan and resumes measuring.
@@ -688,7 +654,7 @@ export function useStudyTimeSync({ mode, getSubject }: UseStudyTimeSyncOptions) 
 
     // Cross-tab lock changes (another tab took over).
     const onStorage = (e: StorageEvent) => {
-      if (e.key === ACTIVE_TIMER_KEY && sessionClientRef.current && runStartRef.current !== null) {
+      if (e.key === 'studyforge-active-timer' && sessionClientRef.current && runStartRef.current !== null) {
         setTabConflict(false);
       }
     };

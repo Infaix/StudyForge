@@ -1,8 +1,9 @@
 'use client';
 
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
-import { AuthUser } from '@/types';
+import { AuthUser, StudyGoal } from '@/types';
 import { refreshUserStats as fetchStudyStats, StudyStats } from '@/lib/client/studySubmission';
+import { migrateAnonymousGoals } from '@/lib/client/goalStore';
 import { devLog } from '@/lib/client/devLog';
 
 interface AuthContextType {
@@ -100,6 +101,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return s;
   }, []);
 
+  /**
+   * Best-effort upload of any anonymous study goals into the account after
+   * sign-in. Never blocks auth; duplicates are idempotently resolved by the
+   * server's unique-index rejection.
+   */
+  const migrateGoalsAfterAuth = useCallback(async () => {
+    try {
+      const res = await fetch('/api/goals?tz=UTC', { credentials: 'include' });
+      const data = await res.json().catch(() => null);
+      if (!data?.success) return;
+      const serverGoals: StudyGoal[] = (data.progress ?? []).map(
+        (p: { goal: StudyGoal }) => p.goal
+      );
+      await migrateAnonymousGoals(serverGoals);
+    } catch {}
+  }, []);
+
   const signIn = useCallback(async (login: string, password: string) => {
     setIsLoading(true);
     try {
@@ -112,13 +130,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const data = await res.json();
       if (!res.ok) return { error: data.error || 'Login failed' };
       await refreshUser();
+      void migrateGoalsAfterAuth();
       return {};
     } catch {
       return { error: 'Network error' };
     } finally {
       setIsLoading(false);
     }
-  }, [refreshUser]);
+  }, [refreshUser, migrateGoalsAfterAuth]);
 
   const signUp = useCallback(async (email: string, username: string, password: string, displayName?: string) => {
     setIsLoading(true);
@@ -132,13 +151,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const data = await res.json();
       if (!res.ok) return { error: data.error || 'Registration failed' };
       await refreshUser();
+      void migrateGoalsAfterAuth();
       return {};
     } catch {
       return { error: 'Network error' };
     } finally {
       setIsLoading(false);
     }
-  }, [refreshUser]);
+  }, [refreshUser, migrateGoalsAfterAuth]);
 
   const signOut = useCallback(async () => {
     setIsLoading(true);

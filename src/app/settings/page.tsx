@@ -26,6 +26,7 @@ import {
   quizQuestionStorage,
   quizResultStorage,
 } from '@/lib/storage';
+import { EXPORT_FILE_PREFIX } from '@/lib/brand';
 
 const STORE_CONFIG = [
   { name: 'subjects', label: 'Subjects', storage: subjectStorage, key: 'subjects' as const },
@@ -113,7 +114,7 @@ export default function SettingsPage() {
       const link = document.createElement('a');
       const date = new Date().toISOString().split('T')[0];
       link.href = url;
-      link.download = `studyforge-export-${date}.json`;
+      link.download = `${EXPORT_FILE_PREFIX}-${date}.json`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -259,7 +260,7 @@ export default function SettingsPage() {
     <DashboardLayout>
       <PageHeader
         title="Settings"
-        description="Customize your StudyForge experience"
+        description="Customize your INFAIX Study experience"
       />
 
       {statusMessage && (
@@ -370,7 +371,7 @@ export default function SettingsPage() {
           <CardHeader>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Import Data</h2>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              Restore data from a StudyForge export file.
+              Restore data from an INFAIX Study export file.
             </p>
           </CardHeader>
           <CardContent>
@@ -406,7 +407,7 @@ export default function SettingsPage() {
 
         <Card>
           <CardHeader>
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">About StudyForge</h2>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">About INFAIX Study</h2>
           </CardHeader>
           <CardContent>
             <div className="space-y-2 text-sm">

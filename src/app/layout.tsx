@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { APP_NAME, APP_ORIGIN, APP_TAGLINE, APP_DESCRIPTION } from "@/lib/brand";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -10,13 +11,19 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "StudyForge - Build better study habits. Master every subject.",
-  description: "The free, student-first productivity platform that helps you organise subjects, track assessments, study effectively, and know exactly what to study next.",
-  keywords: ["study", "productivity", "education", "students", "flashcards", "assessments", "learning"],
-  authors: [{ name: "StudyForge" }],
+  metadataBase: new URL(APP_ORIGIN),
+  title: {
+    default: `${APP_NAME} - ${APP_TAGLINE}`,
+    template: `%s | ${APP_NAME}`,
+  },
+  description: APP_DESCRIPTION,
+  keywords: ["study", "productivity", "education", "students", "flashcards", "assessments", "learning", "infaix"],
+  authors: [{ name: "INFAIX" }],
   openGraph: {
-    title: "StudyForge - Build better study habits",
-    description: "Organise subjects, track assessments, study effectively, and know what to study next.",
+    title: `${APP_NAME} - ${APP_TAGLINE}`,
+    description: APP_DESCRIPTION,
+    url: APP_ORIGIN,
+    siteName: APP_NAME,
     type: "website",
   },
 };

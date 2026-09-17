@@ -4,6 +4,7 @@ import React from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { NotificationBell } from '@/components/notifications/NotificationBell';
+import { BrandLogo } from '@/components/layout/BrandLogo';
 
 export function Header() {
   const { user, signOut } = useAuth();
@@ -11,10 +12,9 @@ export function Header() {
   return (
     <header className="bg-white border-b border-gray-200 dark:bg-gray-800 dark:border-gray-700 sticky top-0 z-30">
       <div className="flex items-center justify-between px-6 py-3">
-        <Link href="/" className="flex items-center gap-2 md:hidden">
-          <span className="text-2xl">🔥</span>
-          <span className="text-xl font-bold text-gray-900 dark:text-white">StudyForge</span>
-        </Link>
+        <div className="md:hidden">
+          <BrandLogo />
+        </div>
         <div className="hidden md:block" />
         <div className="flex items-center gap-3">
           <Link

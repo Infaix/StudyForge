@@ -316,8 +316,8 @@ export default function DashboardPage() {
                   subjects.length === 0
                     ? 'Add your first subject to get started with personalised study recommendations.'
                     : topics.length === 0
-                      ? 'Add topics to your subjects so StudyForge can recommend what to study next.'
-                      : 'Add assessments or complete study sessions to let StudyForge prioritise your study.'
+                      ? 'Add topics to your subjects so we can recommend what to study next.'
+                      : 'Add assessments or complete study sessions to get personalised study priorities.'
                 }
                 action={{
                   label: subjects.length === 0 ? 'Add Subject' : 'View Subjects',

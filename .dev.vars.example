@@ -1,0 +1,6 @@
+# INFAIX Study — WRANGLER/OpenNext local dev secrets (Cloudflare convention).
+# Copy to `.dev.vars` for local `next dev` / `wrangler dev`. THIS FILE'S VALUES
+# ARE DEV-ONLY AND MUST NOT BE USED IN PRODUCTION. Production uses `npx
+# wrangler secret put JWT_SECRET` instead.
+NEXTJS_ENV=development
+JWT_SECRET=<a-local-only-random-string>

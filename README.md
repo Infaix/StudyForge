@@ -1,36 +1,72 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# INFAIX Study
 
-## Getting Started
+Local-first student productivity platform. Organise subjects, track study time,
+set weekly goals, and know exactly what to study next — running entirely on a
+per-user D1 database with anonymous local-first study for signed-out users.
 
-First, run the development server:
+Stack: Next.js 16 (App Router) + React 19 + TypeScript + Tailwind v4, deployed
+as a Cloudflare Worker via OpenNext. Database: Cloudflare D1.
+
+## Development
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000. The canonical Study Hub lives at `/`; `/study`,
+`/hub` redirect there; `/history`, `/subjects` and `/settings` are the other
+primary destinations.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Commands
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Start the local dev server |
+| `npm test` | Run the Vitest suite (pure logic + client helpers) |
+| `npm run lint` | ESLint across the repo |
+| `npx tsc --noEmit` | Typecheck |
+| `npm run build` | OpenNext Cloudflare build (`opennextjs-cloudflare build`) |
+| `npm run deploy` | Build + deploy the Worker to Cloudflare |
 
-## Learn More
+## Configuration
 
-To learn more about Next.js, take a look at the following resources:
+- `wrangler.jsonc` — Worker name, D1 bindings: `DATABASE` (app data) and
+  `NEXT_TAG_CACHE_D1` (tag cache). **Do not rename databases or change IDs.**
+- `open-next.config.ts` — OpenNext/Cloudflare adapter configuration.
+- `migrations/` — D1 schema in apply order (0001 → 0004). Additive only.
+- `JWT_SECRET` — production: `npx wrangler secret put JWT_SECRET`; local:
+  `.dev.vars` (see `.dev.vars.example`). Production fails closed without it.
+- `GET /api/health` — public liveness + D1 probe (200/503, minimal payload).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Branding
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Public product name is **INFAIX Study** (`https://study.infaix.com`). The
+canonical constants live in `src/lib/brand.ts`.
 
-## Deploy on Vercel
+Migration-sensitive identifiers keep their historical `studyforge-*` values on
+purpose: the session cookie, localStorage keys, `[studyforge]` devLog prefix and
+the `__studyforgeFlushAll` gate. Do not rename them — anonymous local data and
+existing sessions depend on them. See `docs/technical.md`.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Verification on Windows
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+PowerShell blocks `.bin` scripts, so run tools through `cmd`:
+
+```powershell
+cmd /c "node_modules\.bin\vitest run 2>&1"
+cmd /c "node_modules\.bin\tsc.cmd --noEmit 2>&1"
+cmd /c "node_modules\.bin\eslint <paths> 2>&1"
+cmd /c "npm run build 2>&1"
+node scripts/verify-d1-migrations.mjs
+```
+
+Note: this machine is Windows ARM64. `workerd` has no `windows-arm64` binary,
+so after a fresh `npm ci` re-add the x64 workerd (it runs under the OS's
+emulation) before building:
+
+```powershell
+cmd /c "npm.cmd install --force --no-save @cloudflare/workerd-windows-64@1.20260811.1"
+```
+
+See `docs/technical.md` and `docs/deployment.md` for details.

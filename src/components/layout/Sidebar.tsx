@@ -4,9 +4,11 @@ import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTheme } from '@/contexts/ThemeContext';
+import { BrandLogo } from '@/components/layout/BrandLogo';
 
 const navigation = [
-  { name: 'Study Hub', href: '/study', icon: '📖' },
+  { name: 'Study', href: '/', icon: '📖' },
+  { name: 'History', href: '/history', icon: '📜' },
   { name: 'Timer', href: '/study/timer', icon: '⏱️' },
   { name: 'Stopwatch', href: '/study/stopwatch', icon: '⏲️' },
   { name: 'Flashcards', href: '/flashcards', icon: '🎴' },
@@ -15,7 +17,8 @@ const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: '📊' },
   { name: 'Subjects', href: '/subjects', icon: '📚' },
   { name: 'Planner', href: '/planner', icon: '📅' },
-  { name: 'Assessments', href: '/assessments', icon: '📋' },
+  { name: 'Exams', href: '/exams', icon: '📋' },
+  { name: 'Exam Lock-In', href: '/study/lock-in', icon: '🎯' },
   { name: 'Calculators', href: '/calculators', icon: '🔢' },
   { name: 'Formulas', href: '/formulas', icon: '📐' },
   { name: 'Leaderboard', href: '/leaderboard', icon: '🏆' },
@@ -33,15 +36,12 @@ export function Sidebar() {
   return (
     <aside className="hidden md:flex flex-col w-64 bg-white border-r border-gray-200 dark:bg-gray-800 dark:border-gray-700 h-screen sticky top-0 overflow-y-auto">
       <div className="p-6">
-        <Link href="/" className="flex items-center gap-2">
-          <span className="text-2xl">🔥</span>
-          <span className="text-xl font-bold text-gray-900 dark:text-white">StudyForge</span>
-        </Link>
+        <BrandLogo />
       </div>
 
       <nav className="flex-1 px-4 space-y-0.5">
         {navigation.map((item) => {
-          const isActive = pathname === item.href || (item.href !== '/study' && pathname.startsWith(item.href));
+          const isActive = pathname === item.href || (item.href.length > 1 && pathname.startsWith(item.href));
           return (
             <Link
               key={item.name}

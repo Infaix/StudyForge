@@ -96,6 +96,116 @@ export const MIN_SUBMIT_SECONDS = 5;
 // Durable pending queue (temporary offline state only)
 // ---------------------------------------------------------------------------
 
+/**
+ * Canonical active-timer snapshot (written ONLY by useStudyTimeSync). /hub
+ * reads it to present the live timer state without owning a second timer
+ * implementation.
+ */
+export interface ActiveTimerSnapshot {
+  sessionId: string;
+  mode: StudyMode;
+  subjectId: string | null;
+  subjectName: string | null;
+  /** Seconds acknowledged by the server within this timer session. */
+  recordedSeconds: number;
+  /** Epoch ms of the open measurement run (null when paused/idle). */
+  runStartedAt: number | null;
+  segStartIso: string | null;
+  paused: boolean;
+  savedAt: number;
+  carriedSeconds?: number;
+  /** Set when the most recent timer mount recovered an orphaned run. */
+  recovered?: boolean;
+}
+
+const ACTIVE_TIMER_KEY = 'studyforge-active-timer';
+
+/** Read the canonical active-timer snapshot (null when no session is open). */
+export function getActiveTimerSnapshot(): ActiveTimerSnapshot | null {
+  try {
+    if (typeof window === 'undefined') return null;
+    const raw = window.localStorage.getItem(ACTIVE_TIMER_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ActiveTimerSnapshot;
+    return parsed && typeof parsed.sessionId === 'string' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export type HubTimerState = 'active' | 'paused' | 'recovered' | 'other-tab' | 'none';
+
+export interface HubActiveTimer {
+  state: HubTimerState;
+  snapshot: ActiveTimerSnapshot | null;
+  /** Live seconds of the open run (0 when paused / not running). */
+  elapsedSeconds: number;
+  /** Total studied in the session (acknowledged + live). */
+  totalSeconds: number;
+}
+
+export interface HubTimerStatusOptions {
+  now: number;
+  tabId: string;
+  lock: TimerLock | null;
+  /** Runs this old are discarded by the timer pipeline and treated as idle. */
+  staleAfterSeconds?: number;
+}
+
+/**
+ * Pure derivation of the /hub primary CTA state from the canonical timer
+ * snapshot + lock. Never starts or stops anything — purely presentational.
+ */
+export function getHubActiveTimerStatus(
+  snapshot: ActiveTimerSnapshot | null,
+  opts: HubTimerStatusOptions
+): HubActiveTimer {
+  const staleAfter = opts.staleAfterSeconds ?? STALE_RUN_SECONDS;
+  if (!snapshot) {
+    return { state: 'none', snapshot: null, elapsedSeconds: 0, totalSeconds: 0 };
+  }
+
+  const runOpen = snapshot.runStartedAt !== null && !snapshot.paused;
+  const runAge = runOpen ? (opts.now - (snapshot.runStartedAt as number)) / 1000 : 0;
+  const savedAge = (opts.now - snapshot.savedAt) / 1000;
+  if (runAge > staleAfter || savedAge > staleAfter) {
+    // The timer pipeline discards stale runs; the hub should look idle too.
+    return { state: 'none', snapshot, elapsedSeconds: 0, totalSeconds: snapshot.recordedSeconds ?? 0 };
+  }
+
+  // Another tab heartbeat this lock recently → it owns the live timer.
+  if (opts.lock && opts.lock.tabId && opts.lock.tabId !== opts.tabId) {
+    if (opts.now - opts.lock.updatedAt <= LOCK_TTL_MS) {
+      return {
+        state: 'other-tab',
+        snapshot,
+        elapsedSeconds: runOpen ? Math.floor(runAge) : 0,
+        totalSeconds: (snapshot.recordedSeconds ?? 0) + (runOpen ? Math.floor(runAge) : 0),
+      };
+    }
+  }
+
+  if (snapshot.recovered === true && runOpen) {
+    return {
+      state: 'recovered',
+      snapshot,
+      elapsedSeconds: Math.floor(runAge),
+      totalSeconds: (snapshot.recordedSeconds ?? 0) + Math.floor(runAge),
+    };
+  }
+
+  if (runOpen) {
+    return {
+      state: 'active',
+      snapshot,
+      elapsedSeconds: Math.floor(runAge),
+      totalSeconds: (snapshot.recordedSeconds ?? 0) + Math.floor(runAge),
+    };
+  }
+
+  return { state: 'paused', snapshot, elapsedSeconds: 0, totalSeconds: snapshot.recordedSeconds ?? 0 };
+}
+
 function safeStorage(): Storage | null {
   try {
     if (typeof window !== 'undefined' && window.localStorage) return window.localStorage;
@@ -639,6 +749,19 @@ export interface TimerLock {
   updatedAt: number;
 }
 
+/** Stable id per browser tab (shared with the timer hook for consistency). */
+let cachedBrowserTabId: string | null = null;
+function newBrowserTabId(): string {
+  try {
+    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
+  } catch {}
+  return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+export function getCurrentTabId(): string {
+  if (!cachedBrowserTabId) cachedBrowserTabId = newBrowserTabId();
+  return cachedBrowserTabId;
+}
+
 /** Pure helper: may this tab take (or keep) ownership of the timer lock? */
 export function shouldTakeoverLock(lock: TimerLock | null, tabId: string, now: number): boolean {
   if (!lock) return true;
@@ -666,6 +789,11 @@ function readTimerLock(): TimerLock | null {
   } catch {
     return null;
   }
+}
+
+/** Read-only view of the timer lock (used by /hub to detect other-tab owners). */
+export function getTimerLock(): TimerLock | null {
+  return readTimerLock();
 }
 
 /** Claim ownership of the active timer; returns true when this tab owns it. */

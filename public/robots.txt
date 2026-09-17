@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://studyforge.com/sitemap.xml
+Sitemap: https://study.infaix.com/sitemap.xml

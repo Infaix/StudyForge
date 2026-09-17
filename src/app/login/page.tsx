@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, Button, Input } from '@/components/ui';
 import { useAuth } from '@/contexts/AuthContext';
+import { BrandLogo } from '@/components/layout/BrandLogo';
 
 export default function LoginPage() {
   const [login, setLogin] = useState('');
@@ -33,7 +34,7 @@ export default function LoginPage() {
       if (result.error) {
         setError(result.error);
       } else {
-        router.push('/dashboard');
+        router.push('/');
       }
     } catch {
       setError('Login failed. Please try again.');
@@ -45,10 +46,9 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
       <div className="w-full max-w-md px-4">
-        <Link href="/" className="flex items-center justify-center gap-2 mb-8">
-          <span className="text-2xl">🔥</span>
-          <span className="text-xl font-bold text-gray-900 dark:text-white">StudyForge</span>
-        </Link>
+        <div className="mb-8 flex justify-center">
+          <BrandLogo />
+        </div>
 
         <Card>
           <CardHeader>

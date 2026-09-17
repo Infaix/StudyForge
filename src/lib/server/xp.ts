@@ -1,5 +1,6 @@
 import { getDB } from '@/lib/db';
-import { getCloudflareContext } from '@opennextjs/cloudflare';
+import { computeStreakInfo, type StreakInfo } from '@/lib/streak';
+import { getCurrentStudyIdentity } from '@/lib/auth/provider';
 
 /**
  * XP Calculation Constants
@@ -19,34 +20,14 @@ export const XP_CONFIG = {
 /**
  * Get the authenticated user ID from the request session.
  * Returns null if not authenticated.
+ *
+ * Delegates to the auth-provider boundary (`getCurrentUser`) so the rest of
+ * the pipeline never touches cookie/JWT internals directly and an INFAIX
+ * provider can replace the current StudyForge one without rewriting callers.
  */
 export async function getAuthenticatedUserId(request: Request): Promise<string | null> {
-  const { env } = getCloudflareContext();
-  const db = env.DATABASE;
-
-  // Try to get user from session cookie
-  const cookieHeader = request.headers.get('Cookie') || '';
-  const cookies: Record<string, string> = {};
-  cookieHeader.split(';').forEach((c) => {
-    const eqIdx = c.indexOf('=');
-    if (eqIdx === -1) return;
-    const key = c.substring(0, eqIdx).trim();
-    const val = c.substring(eqIdx + 1).trim();
-    cookies[key] = val;
-  });
-
-  const token = cookies['studyforge-session'];
-  if (!token) return null;
-
-  // Verify the session token
-  try {
-    const secret = process.env.JWT_SECRET || 'studyforge-dev-secret-change-in-production';
-    const { jwtVerify } = await import('jose');
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(secret));
-    return payload.userId as string;
-  } catch {
-    return null;
-  }
+  const identity = await getCurrentStudyIdentity(request);
+  return identity?.userId ?? null;
 }
 
 /**
@@ -290,14 +271,12 @@ export async function getXpHistory(userId: string, limit: number = 20): Promise<
 /**
  * Calculate streak information for a user based on their study sessions.
  * Calculates current streak, longest streak, last study date, and total study days.
+ *
+ * The calendar math is delegated to the DB-free `computeStreakInfo` core so it
+ * can be unit-tested across timezones (UTC, Australia/Sydney, America/New_York,
+ * DST transitions) using the same timezone helpers as canonical stats.
  */
-export async function getStreakInfo(userId: string, timeZone = 'UTC'): Promise<{
-  currentStreak: number;
-  longestStreak: number;
-  lastStudyDate: string | null;
-  totalStudyDays: number;
-  daysSinceLastStudy: number;
-}> {
+export async function getStreakInfo(userId: string, timeZone = 'UTC', now?: Date | number | string): Promise<StreakInfo> {
   const db = getDB();
 
   // Get all study sessions for this user, ordered by start time
@@ -305,158 +284,7 @@ export async function getStreakInfo(userId: string, timeZone = 'UTC'): Promise<{
     'SELECT id, user_id, duration, start_time, end_time FROM study_sessions WHERE user_id = ? ORDER BY start_time ASC'
   ).bind(userId).all<{ id: string; duration: number; start_time: string; end_time: string }>();
 
-  if (!results || results.length === 0) {
-    return {
-      currentStreak: 0,
-      longestStreak: 0,
-      lastStudyDate: null,
-      totalStudyDays: 0,
-      daysSinceLastStudy: 9999,
-    };
-  }
-
-  const safeTimeZone = (() => { try { new Intl.DateTimeFormat('en-US', { timeZone }); return timeZone; } catch { return 'UTC'; } })();
-  const dateKey = (iso: string) => new Intl.DateTimeFormat('en-CA', { timeZone: safeTimeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
-  // Get unique study days (deduplicated by the user's local calendar date).
-  const uniqueDatesSet = new Set<string>();
-  for (const session of results) {
-    uniqueDatesSet.add(dateKey(session.start_time));
-  }
-
-  const uniqueDates = Array.from(uniqueDatesSet).sort();
-  const totalStudyDays = uniqueDates.length;
-
-  if (uniqueDates.length === 0) {
-    return {
-      currentStreak: 0,
-      longestStreak: 0,
-      lastStudyDate: null,
-      totalStudyDays: 0,
-      daysSinceLastStudy: 9999,
-    };
-  }
-
-  // Calculate last study date (most recent)
-  const lastStudyDate = uniqueDates[uniqueDates.length - 1];
-
-  // Calculate days since last study
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const lastStudy = new Date(lastStudyDate);
-  lastStudy.setHours(0, 0, 0, 0);
-  const diffMs = today.getTime() - lastStudy.getTime();
-  const diffDays = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
-  const daysSinceLastStudy = diffDays;
-
-  // Calculate streaks (longest consecutive study days)
-  // Sort dates and find longest run of consecutive days
-  let longestStreak = 1;
-  let currentStreak = 1;
-
-  for (let i = 1; i < uniqueDates.length; i++) {
-    const prevDate = new Date(uniqueDates[i - 1]);
-    const currDate = new Date(uniqueDates[i]);
-    
-    // Set to start of day for comparison
-    prevDate.setHours(0, 0, 0, 0);
-    currDate.setHours(0, 0, 0, 0);
-    
-    const diff = (currDate.getTime() - prevDate.getTime()) / (1000 * 60 * 60 * 24);
-    
-    if (diff === 1) {
-      // Consecutive day
-      currentStreak++;
-      longestStreak = Math.max(longestStreak, currentStreak);
-    } else if (diff > 1) {
-      // Gap - streak broken
-      currentStreak = 1;
-    }
-    // if diff <= 0, it's the same day or earlier, skip
-  }
-
-  // Calculate current streak (from today backwards)
-  let currentStreakValue = 0;
-  
-  // Check how many consecutive days ending with today have study sessions
-  const todayKey = dateKey(new Date().toISOString());
-  
-  // Walk backwards from today
-  let checkedDays = 0;
-  for (let i = uniqueDates.length - 1; i >= 0; i--) {
-    const dateKey = uniqueDates[i];
-    
-    if (dateKey === todayKey) {
-      currentStreakValue = 1;
-      checkedDays++;
-    } else if (dateKey < todayKey) {
-      // Check if this is exactly one day before the previous checked day
-      const checkedDate = new Date(today);
-      checkedDate.setDate(checkedDate.getDate() - checkedDays);
-      checkedDate.setHours(0, 0, 0, 0);
-      const checkedKey = checkedDate.toISOString().split('T')[0];
-      
-      if (dateKey === checkedKey) {
-        currentStreakValue = checkedDays + 1;
-        checkedDays++;
-      } else if (parseInt(dateKey.replace(/-/g, '')) < parseInt(checkedKey.replace(/-/g, ''))) {
-        // Gap detected - streak ends
-        break;
-      }
-    } else {
-      // Future date, stop
-      break;
-    }
-  }
-
-  // If no session today, check from yesterday backwards
-  if (currentStreakValue === 0) {
-    // Check how many consecutive days ending yesterday have sessions
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    yesterday.setHours(0, 0, 0, 0);
-    const yesterdayKey = dateKey(yesterday.toISOString());
-    
-    let streakFromYesterday = 0;
-    let daysChecked = 0;
-    
-    for (let i = uniqueDates.length - 1; i >= 0; i--) {
-      const dateKey = uniqueDates[i];
-      
-      if (dateKey === yesterdayKey) {
-        streakFromYesterday = 1;
-        daysChecked = 1;
-      } else if (dateKey < yesterdayKey) {
-        const prevDate = new Date(today);
-        prevDate.setDate(prevDate.getDate() - daysChecked - 1);
-        prevDate.setHours(0, 0, 0, 0);
-        const prevKey = prevDate.toISOString().split('T')[0];
-        
-        if (dateKey === prevKey) {
-          streakFromYesterday = daysChecked + 1;
-          daysChecked++;
-        } else if (parseInt(dateKey.replace(/-/g, '')) < parseInt(prevKey.replace(/-/g, ''))) {
-          break;
-        }
-      } else {
-        break;
-      }
-    }
-    
-    currentStreakValue = streakFromYesterday;
-  }
-
-  // Make sure longestStreak is at least 1 if there are any study days
-  if (totalStudyDays > 0 && longestStreak < 1) {
-    longestStreak = 1;
-  }
-
-  return {
-    currentStreak: currentStreakValue,
-    longestStreak,
-    lastStudyDate,
-    totalStudyDays,
-    daysSinceLastStudy,
-  };
+  return computeStreakInfo(results ?? [], { timeZone, now });
 };
 
 /**
@@ -473,7 +301,7 @@ export async function awardAchievement(
   icon: string,
   requirement: string,
   rewardXp: number
-): Promise<{ unlocked: boolean; achievement: any; newTotalXp: number; newLevel: number }> {
+): Promise<{ unlocked: boolean; achievement: { key: string; name: string; description: string; icon: string; requirement: string; rewardXp: number }; newTotalXp: number; newLevel: number }> {
   const userId = await getAuthenticatedUserId(request);
   if (!userId) {
     throw new Error('Unauthenticated');
@@ -505,7 +333,7 @@ export async function awardAchievement(
   const achievementId = crypto.randomUUID();
 
   await db.prepare(
-    'INSERT INTO user_achievements (id, user_id, achievement_id, unlockedAt) VALUES (?, ?, ?, ?)'
+    'INSERT INTO user_achievements (id, user_id, achievement_id, unlocked_at) VALUES (?, ?, ?, ?)'
   ).bind(achievementId, userId, achievementKey, now).run();
 
   // Award XP for the achievement

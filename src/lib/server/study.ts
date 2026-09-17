@@ -1,5 +1,28 @@
 import { getDB } from '@/lib/db';
 import { XP_CONFIG, getLevelFromXp, getStreakInfo } from './xp';
+import {
+  safeTimeZone,
+  tzOffsetMs,
+  zonedMidnightToUtcMs,
+  zonedDateParts,
+  zonedDateKey,
+  zonedWeekday,
+  getZonedDayBounds,
+  type DayBounds,
+} from '@/lib/time';
+
+// Re-export the shared timezone helpers so existing callers importing them
+// from '@/lib/server/study' keep working unchanged.
+export {
+  safeTimeZone,
+  tzOffsetMs,
+  zonedMidnightToUtcMs,
+  zonedDateParts,
+  zonedDateKey,
+  zonedWeekday,
+  getZonedDayBounds,
+  type DayBounds,
+};
 
 export type StudyMode = 'stopwatch' | 'countdown' | 'pomodoro' | 'custom';
 
@@ -205,96 +228,10 @@ export function sessionGroupKey(row: { session_id?: string | null; segment_id?: 
 // Timezone-aware calendar boundaries.
 //
 // start_time values are UTC ISO strings. "Today" must follow the user's
-// local calendar day, not UTC. All helpers below resolve a local wall-clock
-// boundary (midnight / Monday / 1st of month) back to a UTC instant using
-// Intl, with an iterative offset fix-up so DST transitions stay correct.
+// local calendar day, not UTC. All helpers live in @/lib/time (client-safe)
+// and are resolved back to a UTC instant using Intl, with an iterative offset
+// fix-up so DST transitions stay correct. See src/lib/time.ts.
 // ---------------------------------------------------------------------------
-
-function safeTimeZone(tz: unknown): string {
-  if (typeof tz !== 'string' || !tz) return 'UTC';
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tz });
-    return tz;
-  } catch {
-    return 'UTC';
-  }
-}
-
-function tzOffsetMs(timeZone: string, ms: number): number {
-  const dtf = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    hour12: false,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-  const parts = dtf.formatToParts(new Date(ms));
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '0';
-  const asUTC = Date.UTC(
-    parseInt(get('year'), 10),
-    parseInt(get('month'), 10) - 1,
-    parseInt(get('day'), 10),
-    parseInt(get('hour'), 10) % 24,
-    parseInt(get('minute'), 10),
-    parseInt(get('second'), 10)
-  );
-  return asUTC - ms;
-}
-
-/** UTC instant of a local-calendar midnight in `timeZone`. */
-export function zonedMidnightToUtcMs(y: number, m: number, d: number, timeZone: string): number {
-  const tz = safeTimeZone(timeZone);
-  const wallAsUTC = Date.UTC(y, m - 1, d, 0, 0, 0);
-  // Fixed-point iteration: ms + offset(ms) == wallAsUTC. Two passes are
-  // enough even across DST transitions.
-  let ms = wallAsUTC;
-  for (let i = 0; i < 2; i++) ms = wallAsUTC - tzOffsetMs(tz, ms);
-  return ms;
-}
-
-export function zonedDateParts(ms: number, timeZone: string): { y: number; m: number; d: number } {
-  const tz = safeTimeZone(timeZone);
-  const dtf = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
-  const [y, m, d] = dtf.format(new Date(ms)).split('-').map((n) => parseInt(n, 10));
-  return { y, m, d };
-}
-
-/** Local weekday (1=Mon..7=Sun) for an instant in `timeZone`. */
-function zonedWeekday(ms: number, timeZone: string): number {
-  const dtf = new Intl.DateTimeFormat('en-US', { timeZone: safeTimeZone(timeZone), weekday: 'short' });
-  const day = dtf.format(new Date(ms));
-  return { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }[day] ?? 1;
-}
-
-export interface DayBounds {
-  todayStartIso: string;
-  weekStartIso: string;
-  monthStartIso: string;
-}
-
-/** Calendar day/week(Mon)/month starts in the user's timezone, as UTC ISOs. */
-export function getZonedDayBounds(nowMs: number, timeZone: string): DayBounds {
-  const tz = safeTimeZone(timeZone);
-  const { y, m, d } = zonedDateParts(nowMs, tz);
-  const todayStart = zonedMidnightToUtcMs(y, m, d, tz);
-  const weekday = zonedWeekday(nowMs, tz);
-  const weekStart = todayStart - (weekday - 1) * 24 * 60 * 60 * 1000;
-  const monthStart = zonedMidnightToUtcMs(y, m, 1, tz);
-  return {
-    todayStartIso: new Date(todayStart).toISOString(),
-    weekStartIso: new Date(weekStart).toISOString(),
-    monthStartIso: new Date(monthStart).toISOString(),
-  };
-}
-
-/** Local YYYY-MM-DD for an instant in `timeZone`. */
-export function zonedDateKey(ms: number, timeZone: string): string {
-  const { y, m, d } = zonedDateParts(ms, safeTimeZone(timeZone));
-  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-}
 
 /**
  * Authoritative aggregate statistics for a user, derived from study_sessions.

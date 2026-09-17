@@ -188,7 +188,7 @@ export default function AssessmentsPage() {
         <EmptyState
           icon={<span className="text-6xl">📝</span>}
           title="No assessments yet"
-          description="Add your upcoming assessments to help StudyForge prioritise your study."
+          description="Add your upcoming assessments to help prioritise your study."
           action={{
             label: 'Add Assessment',
             onClick: () => { resetForm(); setIsAddDialogOpen(true); },

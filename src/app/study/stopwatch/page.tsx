@@ -200,7 +200,7 @@ export default function StudyStopwatch() {
         )}
         {sync.tabConflict && (
           <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20 px-4 py-3 text-sm text-yellow-800 dark:text-yellow-200">
-            Another StudyForge tab is running a timer. Only one tab owns the session to avoid double-counting.
+            Another INFAIX Study tab is running a timer. Only one tab owns the session to avoid double-counting.
           </div>
         )}
         {sync.lastProblem === 'auth' ? (

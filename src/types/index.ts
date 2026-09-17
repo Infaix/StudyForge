@@ -122,6 +122,29 @@ export interface UserSettings {
   updatedAt: string;
 }
 
+/** Currently supported goal periods. Future periods widen this union + DB CHECK. */
+export type GoalPeriod = 'weekly';
+
+export interface StudyGoal {
+  id: string;
+  userId: string;
+  /** Null = the overall weekly goal ("study X per week"), not a subject. */
+  subjectId: string | null;
+  period: GoalPeriod;
+  /** Target in canonical study seconds (internally stored; UI edits in hours). */
+  targetSeconds: number;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StudyGoalInput {
+  subjectId?: string | null;
+  period?: GoalPeriod;
+  targetSeconds: number;
+  enabled?: boolean;
+}
+
 export interface PrivacySettings {
   profilePublic: boolean;
   showStats: boolean;
