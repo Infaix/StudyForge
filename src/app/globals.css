@@ -1,13 +1,27 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f4f7fb;
+  --foreground: #142033;
+  --surface: rgba(255, 255, 255, 0.88);
+  --surface-strong: #ffffff;
+  --line: rgba(20, 32, 51, 0.10);
+  --muted: #65738a;
+  --accent: #4f6df5;
+  --accent-soft: #e9edff;
+  --shadow: 0 18px 48px rgba(34, 52, 84, 0.08);
 }
 
 .dark {
-  --background: #0a0a0a;
-  --foreground: #ededed;
+  --background: #0b1019;
+  --foreground: #edf3ff;
+  --surface: rgba(18, 27, 42, 0.86);
+  --surface-strong: #121b2a;
+  --line: rgba(174, 196, 235, 0.13);
+  --muted: #91a0b8;
+  --accent: #8da2ff;
+  --accent-soft: rgba(94, 113, 224, 0.18);
+  --shadow: 0 22px 60px rgba(0, 0, 0, 0.26);
 }
 
 @theme inline {
@@ -21,4 +35,35 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans, Arial, Helvetica, sans-serif);
+  min-width: 320px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button, a { -webkit-tap-highlight-color: transparent; }
+
+.app-shell {
+  background:
+    radial-gradient(circle at 78% -10%, rgba(91, 112, 246, 0.12), transparent 34rem),
+    radial-gradient(circle at 4% 22%, rgba(79, 174, 230, 0.07), transparent 28rem),
+    var(--background);
+}
+
+.premium-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(16px);
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+.premium-card:hover { border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); }
+.premium-button { transition: transform 140ms ease, box-shadow 180ms ease, background-color 180ms ease; }
+.premium-button:active { transform: translateY(1px) scale(0.985); }
+.motion-enter { animation: motion-enter 420ms cubic-bezier(.2,.8,.2,1) both; }
+.sync-pulse { animation: sync-pulse 1.8s ease-in-out infinite; }
+
+@keyframes motion-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes sync-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
 }

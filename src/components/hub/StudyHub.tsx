@@ -110,7 +110,7 @@ export function StudyHub() {
     <DashboardLayout>
       <main className="mx-auto max-w-6xl space-y-6 pb-8">
         {/* Header + settings */}
-        <header className="flex items-start justify-between">
+        <header className="motion-enter flex items-start justify-between">
           <div>
             <p className="text-sm font-semibold uppercase tracking-widest text-blue-600">Study Hub</p>
             <h1 className="mt-1 text-3xl font-bold text-gray-950 dark:text-white">Start studying</h1>
@@ -168,7 +168,7 @@ export function StudyHub() {
         )}
 
         {/* Primary CTA */}
-        <Card className="border-blue-200">
+        <Card className="study-hero border-blue-300/30 bg-gradient-to-br from-[var(--surface-strong)] via-[var(--surface)] to-[var(--accent-soft)]">
           <CardContent className="p-6 text-center sm:p-10">
             {timer.state === 'none' && !(s?.totalStudySeconds ?? anonTotal) ? (
               <>
@@ -195,11 +195,11 @@ export function StudyHub() {
             )}
               <Link
                 href={ctaHref}
-              className="mt-4 inline-block rounded-lg bg-blue-600 px-6 py-3 text-sm font-semibold text-white shadow hover:bg-blue-700"
+                className="premium-button mt-4 inline-block rounded-xl bg-[var(--accent)] px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-900/20 hover:brightness-105"
               >
                 {ctaLabel}
               </Link>
-              <Link href="/study/lock-in" className="ml-3 mt-4 inline-block rounded-lg border border-blue-200 px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950">
+              <Link href="/study/lock-in" className="premium-button ml-3 mt-4 inline-block rounded-xl border border-[var(--line)] px-4 py-3 text-sm font-semibold text-[var(--accent)] hover:bg-[var(--accent-soft)]">
                 Exam Lock-In
               </Link>
           </CardContent>
@@ -259,20 +259,20 @@ export function StudyHub() {
         <GoalEditor open={goalEditorOpen} onClose={() => setGoalEditorOpen(false)} subjects={subjects} />
 
         {/* Stats grid */}
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {anon ? (
             <>
-              <Stat label="Total" value={fmt(anonTotal)} primary />
-              <Stat label="Today" value={fmt(anonToday)} />
+              <Stat label="Today" value={fmt(anonToday)} primary />
+              <Stat label="All time" value={fmt(anonTotal)} />
               <Stat label="This Week" value="—" />
               <Stat label="Streak" value="—" />
             </>
           ) : (
             <>
-              <Stat label="Total" value={fmt(s?.totalStudySeconds ?? 0)} primary />
-              <Stat label="Today" value={fmt(s?.todayStudySeconds ?? 0)} />
+              <Stat label="Today" value={fmt(s?.todayStudySeconds ?? 0)} primary />
               <Stat label="This Week" value={fmt(s?.weekStudySeconds ?? 0)} />
               <Stat label="Streak" value={`${s?.streak ?? 0}d`} />
+              <Stat label="All time" value={fmt(s?.totalStudySeconds ?? 0)} />
             </>
           )}
         </div>
@@ -290,7 +290,7 @@ export function StudyHub() {
                 {days.map((d, i) => (
                   <div key={i} className="flex flex-1 flex-col items-center gap-1">
                     <div
-                      className="w-full rounded bg-blue-500 transition-all"
+                      className="chart-bar w-full rounded-t bg-[var(--accent)] transition-all"
                       style={{ height: `${(d.seconds / max) * 100}%`, minHeight: d.seconds > 0 ? 4 : 0 }}
                       title={fmt(d.seconds)}
                     />
@@ -339,9 +339,9 @@ export function StudyHub() {
 
 function Stat({ label, value, primary = false }: { label: string; value: string; primary?: boolean }) {
   return (
-    <div className={`rounded-lg border p-4 ${primary ? 'border-blue-200 bg-blue-50' : 'border-gray-200 bg-white dark:bg-gray-900'}`}>
+    <div className={`premium-card rounded-2xl border p-4 ${primary ? 'metric-today border-[var(--accent)]/30 bg-[var(--accent-soft)]' : ''}`}>
       <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">{label}</p>
-      <p className={`mt-2 font-bold ${primary ? 'text-3xl text-blue-700' : 'text-2xl text-gray-950 dark:text-white'}`}>{value}</p>
+      <p className={`mt-2 font-bold ${primary ? 'text-3xl text-[var(--accent)]' : 'text-2xl text-gray-950 dark:text-white'}`}>{value}</p>
     </div>
   );
 }

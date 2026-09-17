@@ -9,7 +9,7 @@ interface CardProps {
 export const Card: React.FC<CardProps> = ({ children, className = '', onClick }) => {
   return (
     <div
-      className={`bg-white rounded-xl border border-gray-200 shadow-sm dark:bg-gray-800 dark:border-gray-700 ${className}`}
+      className={`premium-card rounded-2xl ${className}`}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}

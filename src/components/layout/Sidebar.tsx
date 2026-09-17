@@ -34,24 +34,25 @@ export function Sidebar() {
   const { theme, setTheme } = useTheme();
 
   return (
-    <aside className="hidden md:flex flex-col w-64 bg-white border-r border-gray-200 dark:bg-gray-800 dark:border-gray-700 h-screen sticky top-0 overflow-y-auto">
+    <aside className="hidden md:flex flex-col w-64 bg-[color:var(--surface)]/70 border-r border-[var(--line)] h-screen sticky top-0 overflow-y-auto backdrop-blur-xl">
       <div className="p-6">
         <BrandLogo />
       </div>
 
-      <nav className="flex-1 px-4 space-y-0.5">
+      <nav className="flex-1 px-4 space-y-1">
         {navigation.map((item) => {
           const isActive = pathname === item.href || (item.href.length > 1 && pathname.startsWith(item.href));
           return (
             <Link
               key={item.name}
               href={item.href}
-              className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                className={`group relative flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
                 isActive
-                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400'
-                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700'
-              }`}
-            >
+                    ? 'bg-[var(--accent-soft)] text-[var(--accent)] shadow-sm'
+                    : 'text-gray-600 hover:bg-black/[.035] dark:text-gray-300 dark:hover:bg-white/[.045]'
+                }`}
+              >
+                {isActive && <span className="absolute left-0 h-5 w-1 rounded-full bg-[var(--accent)]" aria-hidden="true" />}
               <span className="text-base">{item.icon}</span>
               {item.name}
             </Link>

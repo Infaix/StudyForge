@@ -33,7 +33,8 @@ export function MobileNav() {
     <>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="md:hidden fixed bottom-4 right-4 z-50 bg-blue-600 text-white p-4 rounded-full shadow-lg hover:bg-blue-700 transition-colors"
+        aria-label={isOpen ? 'Close navigation' : 'Open navigation'}
+        className="premium-button md:hidden fixed bottom-4 right-4 z-50 bg-[var(--accent)] text-white p-4 rounded-2xl shadow-xl shadow-indigo-950/20 hover:brightness-105 transition-colors"
       >
         {isOpen ? '✕' : '☰'}
       </button>
@@ -43,7 +44,7 @@ export function MobileNav() {
       )}
 
       <div
-        className={`md:hidden fixed bottom-16 right-4 z-40 bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 w-64 max-h-[70vh] overflow-y-auto transition-all duration-200 ${
+        className={`md:hidden fixed bottom-20 right-4 z-40 bg-[var(--surface-strong)] rounded-2xl shadow-2xl border border-[var(--line)] w-[min(18rem,calc(100vw-2rem))] max-h-[70vh] overflow-y-auto transition-all duration-200 ${
           isOpen ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'
         }`}
       >
