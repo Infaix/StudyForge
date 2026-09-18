@@ -57,7 +57,8 @@ export async function signSession(userId: string): Promise<string> {
 
 export async function verifySession(token: string): Promise<SessionPayload | null> {
   try {
-    const { payload } = await jwtVerify(token, signingSecret());
+    const { payload } = await jwtVerify(token, signingSecret(), { algorithms: ['HS256'] });
+    if (typeof payload.userId !== 'string' || !payload.userId.trim() || typeof payload.exp !== 'number') return null;
     return payload as SessionPayload;
   } catch {
     return null;

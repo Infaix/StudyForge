@@ -15,7 +15,7 @@ interface AuthContextType {
    * (segment ack or explicit refresh). Data-heavy pages watch this to refetch.
    */
   statsRevision: number;
-  refreshUser: () => Promise<void>;
+  refreshUser: () => Promise<boolean>;
   /**
    * THE shared statistics refresh (reads /api/study/stats and applies the
    * D1-backed values to the shared auth/profile state). Read-only — it can
@@ -51,18 +51,19 @@ function mergeStudyStats(user: AuthUser, s: StudyStats): AuthUser {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isInitializing, setIsInitializing] = useState(true);
   const [hasSession, setHasSession] = useState(false);
   const [statsRevision, setStatsRevision] = useState(0);
 
   const refreshUser = useCallback(async () => {
     try {
-      const res = await fetch('/api/auth/me', { credentials: 'include' });
+      const res = await fetch('/api/auth/me', { credentials: 'include', cache: 'no-store' });
       if (res.ok) {
         const data = await res.json();
         if (data.user) {
           setUser(data.user);
           setHasSession(true);
-          return;
+          return true;
         }
       }
       setUser(null);
@@ -71,12 +72,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(null);
       setHasSession(false);
     }
+    return false;
   }, []);
 
   useEffect(() => {
     let mounted = true;
     refreshUser().finally(() => {
-      if (mounted) setIsLoading(false);
+      if (mounted) {
+        setIsLoading(false);
+        setIsInitializing(false);
+      }
     });
     return () => { mounted = false };
   }, [refreshUser]);
@@ -129,7 +134,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       const data = await res.json();
       if (!res.ok) return { error: data.error || 'Login failed' };
-      await refreshUser();
+      if (!await refreshUser()) {
+        return { error: 'Your session could not be confirmed. Please try signing in again.' };
+      }
       void migrateGoalsAfterAuth();
       return {};
     } catch {
@@ -150,7 +157,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       const data = await res.json();
       if (!res.ok) return { error: data.error || 'Registration failed' };
-      await refreshUser();
+      if (!await refreshUser()) {
+        return { error: 'Your account was created, but your session could not be confirmed. Please sign in.' };
+      }
       void migrateGoalsAfterAuth();
       return {};
     } catch {
@@ -171,7 +180,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch {
         // Best-effort: pagehide/queue recovery covers the remainder.
       }
-      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+      const response = await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+      if (!response.ok) throw new Error('Sign out failed. Please try again.');
       setUser(null);
       setHasSession(false);
       window.location.href = '/login';
@@ -184,7 +194,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser((prev) => prev ? { ...prev, ...updates } : null);
   }, []);
 
-  if (isLoading) {
+  // Only gate the initial identity lookup. Gating mutations unmounts the
+  // calling form, discarding credentials and errors before the request ends.
+  if (isInitializing) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   }
 
